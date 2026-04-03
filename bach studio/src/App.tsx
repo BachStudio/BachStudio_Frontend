@@ -1,5 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
+import * as Tone from 'tone';
+import { Piano } from '@tonejs/piano/build/piano/Piano';
 
 function LandingView({ onStartProject }: { onStartProject: () => void }) {
   return (
@@ -137,13 +140,54 @@ function MainEditor() {
   const [searchParams] = useSearchParams();
   const [isAICoreVisible, setIsAICoreVisible] = useState(false);
   const [isAddTrackModalOpen, setIsAddTrackModalOpen] = useState(false);
-  const [isStitchInstructionOpen, setIsStitchInstructionOpen] = useState(false);
   const [selectedTrackType, setSelectedTrackType] = useState('Instrument');
-  const [tracks, setTracks] = useState<Array<{ id: number; type: string; name: string; icon: string; clipClass: string }>>([]);
+  const [tracks, setTracks] = useState<Array<{ id: number; type: string; name: string; icon: string; clipClass: string; notes: Array<{ id: number; start: number; pitch: number; length: number }> }>>([]);
+  const [isPianoRollOpen, setIsPianoRollOpen] = useState(false);
+  const [isRecorderOpen, setIsRecorderOpen] = useState(false);
+  const [activePianoTrackId, setActivePianoTrackId] = useState<number | null>(null);
+  const [pianoTool, setPianoTool] = useState<'select' | 'draw'>('select');
+  const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
+  const [dragState, setDragState] = useState<null | {
+    noteIds: number[];
+    origins: Array<{ id: number; start: number; pitch: number; length: number }>;
+    mode: 'move' | 'resize';
+    startClientX: number;
+    startClientY: number;
+  }>(null);
+  const [selectionBox, setSelectionBox] = useState<null | {
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  }>(null);
+  const [isAudioReady, setIsAudioReady] = useState(false);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const pianoKeysRef = useRef<HTMLDivElement | null>(null);
+  const isSyncingScrollRef = useRef(false);
+  const pianoEngineRef = useRef<Piano | null>(null);
 
   const projectName = searchParams.get('projectName') ?? 'SESSION_2023_X4';
   const bpmRaw = Number.parseFloat(searchParams.get('bpm') ?? '128');
   const bpmLabel = Number.isFinite(bpmRaw) ? bpmRaw.toFixed(2) : '128.00';
+  const GRID_COL_WIDTH = 40;
+  const GRID_ROW_HEIGHT = 24;
+  const GRID_TOTAL_ROWS = 72;
+  const GRID_TOTAL_COLS = 160;
+  const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const BLACK_SEMITONES = new Set([1, 3, 6, 8, 10]);
+  const PIANO_SAMPLES_URL = 'https://tambien.github.io/Piano/audio/';
+
+  const pianoRows = Array.from({ length: GRID_TOTAL_ROWS }, (_, row) => {
+    const midi = 72 - row;
+    const semitone = ((midi % 12) + 12) % 12;
+    const octave = Math.floor(midi / 12) - 1;
+    const isBlack = BLACK_SEMITONES.has(semitone);
+    const label = semitone === 0 ? `${NOTE_NAMES[semitone]}${octave}` : '';
+    return { row, isBlack, label };
+  });
 
   const trackTypeOptions = [
     { id: 'Instrument', icon: 'piano', subtitle: 'Synth / MIDI Architecture' },
@@ -151,20 +195,6 @@ function MainEditor() {
     { id: 'Audio', icon: 'mic', subtitle: 'Recorded / Live Signal Path' },
     { id: 'Bus', icon: 'route', subtitle: 'Routing / Group Channel' },
   ];
-
-  const stitchInstructionsText = `## Stitch Instructions
-
-Get the images and code for the following Stitch project's screens:
-
-## Project
-Title: Bach Studio 프로젝트 요구사항 (PRD)
-ID: 12167813109906429309
-
-## Screens:
-1. Piano Roll Editor (English 16:9)
-    ID: 8c7605a7b7fb4af8b4c576944be532e4
-
-Use a utility like curl -L to download the hosted URLs.`;
 
   const handleAddTrack = () => {
     const selectedOption = trackTypeOptions.find((option) => option.id === selectedTrackType) ?? trackTypeOptions[0];
@@ -183,12 +213,378 @@ Use a utility like curl -L to download the hosted URLs.`;
         name: `${String(nextIndex).padStart(2, '0')} ${selectedOption.id.toUpperCase()} TRACK`,
         icon: selectedOption.icon,
         clipClass: clipClassByType[selectedOption.id] ?? 'bg-primary/10 border-primary/20',
+        notes: [],
       };
       return [...prev, createdTrack];
     });
 
     setIsAddTrackModalOpen(false);
   };
+
+  const handleTrackDoubleClick = (trackId: number) => {
+    setActivePianoTrackId(trackId);
+    setPianoTool('select');
+    setSelectedNoteIds([]);
+    setIsPianoRollOpen(true);
+  };
+
+  const activeTrack = tracks.find((track) => track.id === activePianoTrackId) ?? null;
+  const activeTrackName = activeTrack?.name ?? 'TRACK';
+  const activeTrackNotes = activeTrack?.notes ?? [];
+  const bpmNumber = Number.isFinite(bpmRaw) ? bpmRaw : 128;
+
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+  const updateActiveTrackNotes = (updater: (notes: Array<{ id: number; start: number; pitch: number; length: number }>) => Array<{ id: number; start: number; pitch: number; length: number }>) => {
+    if (activePianoTrackId === null) {
+      return;
+    }
+
+    setTracks((prev) =>
+      prev.map((track) => (track.id === activePianoTrackId ? { ...track, notes: updater(track.notes) } : track)),
+    );
+  };
+
+  const rowToNote = (row: number) => {
+    const midi = clamp(72 - row, 21, 108);
+    const semitone = ((midi % 12) + 12) % 12;
+    const octave = Math.floor(midi / 12) - 1;
+    return `${NOTE_NAMES[semitone]}${octave}`;
+  };
+
+  const ensurePianoAudioReady = async () => {
+    if (pianoEngineRef.current && isAudioReady) {
+      return true;
+    }
+
+    if (isAudioLoading) {
+      return false;
+    }
+
+    setIsAudioLoading(true);
+    setAudioError(null);
+    try {
+      await Tone.start();
+
+      if (!pianoEngineRef.current) {
+        const piano = new Piano({
+          url: PIANO_SAMPLES_URL,
+          velocities: 2,
+          minNote: 24,
+          maxNote: 96,
+          release: false,
+          pedal: false,
+          maxPolyphony: 24,
+        });
+        piano.toDestination();
+        await piano.load();
+        pianoEngineRef.current = piano;
+      }
+
+      setIsAudioReady(true);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to initialize piano audio';
+      setAudioError(`Piano load failed: ${message}`);
+      pianoEngineRef.current?.dispose();
+      pianoEngineRef.current = null;
+      setIsAudioReady(false);
+      return false;
+    } finally {
+      setIsAudioLoading(false);
+    }
+  };
+
+  const previewPitch = (pitch: number, beats = 0.5) => {
+    const piano = pianoEngineRef.current;
+    if (!piano) {
+      return;
+    }
+
+    const note = rowToNote(pitch);
+    const now = Tone.now();
+    const durationSec = Math.max(0.12, (60 / bpmNumber) * beats);
+    piano.keyDown({ note, velocity: 0.85, time: now });
+    piano.keyUp({ note, time: now + durationSec });
+  };
+
+  const getPointerInGrid = (clientX: number, clientY: number) => {
+    if (!gridRef.current) {
+      return { x: 0, y: 0 };
+    }
+
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = clientX - rect.left + gridRef.current.scrollLeft;
+    const y = clientY - rect.top + gridRef.current.scrollTop;
+    return {
+      x: clamp(Math.floor(x), 0, GRID_TOTAL_COLS * GRID_COL_WIDTH),
+      y: clamp(Math.floor(y), 0, GRID_TOTAL_ROWS * GRID_ROW_HEIGHT),
+    };
+  };
+
+  const syncVerticalScroll = (source: 'grid' | 'keys') => {
+    if (!gridRef.current || !pianoKeysRef.current || isSyncingScrollRef.current) {
+      return;
+    }
+
+    isSyncingScrollRef.current = true;
+    if (source === 'grid') {
+      pianoKeysRef.current.scrollTop = gridRef.current.scrollTop;
+    } else {
+      gridRef.current.scrollTop = pianoKeysRef.current.scrollTop;
+    }
+    requestAnimationFrame(() => {
+      isSyncingScrollRef.current = false;
+    });
+  };
+
+  const handleGridMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !activeTrack || !gridRef.current) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    if (target.dataset.note === '1' || target.closest('[data-note="1"]')) {
+      return;
+    }
+
+    if (pianoTool === 'select') {
+      event.preventDefault();
+      const pointer = getPointerInGrid(event.clientX, event.clientY);
+      setSelectedNoteIds([]);
+      setSelectionBox({
+        startX: pointer.x,
+        startY: pointer.y,
+        currentX: pointer.x,
+        currentY: pointer.y,
+      });
+      return;
+    }
+
+    if (pianoTool !== 'draw') {
+      return;
+    }
+
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = event.clientX - rect.left + gridRef.current.scrollLeft;
+    const y = event.clientY - rect.top + gridRef.current.scrollTop;
+    const snappedStart = Math.max(0, Math.floor(x / GRID_COL_WIDTH));
+    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, GRID_TOTAL_ROWS - 1);
+    const createdId = Date.now() + activeTrackNotes.length;
+
+    updateActiveTrackNotes((notes) => [
+      ...notes,
+      {
+        id: createdId,
+        start: snappedStart,
+        pitch: snappedPitch,
+        length: 2,
+      },
+    ]);
+    setSelectedNoteIds([createdId]);
+    void (async () => {
+      const ready = await ensurePianoAudioReady();
+      if (ready) {
+        previewPitch(snappedPitch, 0.5);
+      }
+    })();
+  };
+
+  const handleGridDoubleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || pianoTool !== 'select' || !gridRef.current || !activeTrack) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    if (target.dataset.note === '1' || target.closest('[data-note="1"]')) {
+      return;
+    }
+
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = event.clientX - rect.left + gridRef.current.scrollLeft;
+    const y = event.clientY - rect.top + gridRef.current.scrollTop;
+    const snappedStart = Math.max(0, Math.floor(x / GRID_COL_WIDTH));
+    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, GRID_TOTAL_ROWS - 1);
+    const createdId = Date.now() + activeTrackNotes.length;
+
+    updateActiveTrackNotes((notes) => [
+      ...notes,
+      {
+        id: createdId,
+        start: snappedStart,
+        pitch: snappedPitch,
+        length: 2,
+      },
+    ]);
+    setSelectedNoteIds([createdId]);
+    setSelectionBox(null);
+    void (async () => {
+      const ready = await ensurePianoAudioReady();
+      if (ready) {
+        previewPitch(snappedPitch, 0.5);
+      }
+    })();
+  };
+
+  const handleNoteMouseDown = (
+    event: ReactMouseEvent<HTMLElement>,
+    note: { id: number; start: number; pitch: number; length: number },
+    forcedMode?: 'move' | 'resize',
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (pianoTool !== 'select') {
+      return;
+    }
+
+    const dragTargetIds = selectedNoteIds.includes(note.id) && selectedNoteIds.length > 0
+      ? selectedNoteIds
+      : [note.id];
+
+    if (!selectedNoteIds.includes(note.id)) {
+      setSelectedNoteIds([note.id]);
+    }
+
+    const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const xInside = event.clientX - rect.left;
+    const mode: 'move' | 'resize' = forcedMode ?? (xInside > rect.width - 10 ? 'resize' : 'move');
+    const origins = activeTrackNotes
+      .filter((item) => dragTargetIds.includes(item.id))
+      .map((item) => ({
+        id: item.id,
+        start: item.start,
+        pitch: item.pitch,
+        length: item.length,
+      }));
+
+    setDragState({
+      noteIds: dragTargetIds,
+      origins,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+    });
+
+    void (async () => {
+      const ready = await ensurePianoAudioReady();
+      if (ready) {
+        previewPitch(note.pitch, 0.25);
+      }
+    })();
+  };
+
+  useEffect(() => {
+    return () => {
+      pianoEngineRef.current?.stopAll();
+      pianoEngineRef.current?.dispose();
+      pianoEngineRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!dragState) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const deltaCols = Math.round((event.clientX - dragState.startClientX) / GRID_COL_WIDTH);
+      const deltaRows = Math.round((event.clientY - dragState.startClientY) / GRID_ROW_HEIGHT);
+
+      updateActiveTrackNotes((notes) =>
+        notes.map((note) => {
+          if (!dragState.noteIds.includes(note.id)) {
+            return note;
+          }
+
+          const origin = dragState.origins.find((item) => item.id === note.id);
+          if (!origin) {
+            return note;
+          }
+
+          if (dragState.mode === 'resize') {
+            return {
+              ...note,
+              length: Math.max(1, origin.length + deltaCols),
+            };
+          }
+
+          return {
+            ...note,
+            start: Math.max(0, origin.start + deltaCols),
+            pitch: clamp(origin.pitch + deltaRows, 0, GRID_TOTAL_ROWS - 1),
+          };
+        }),
+      );
+    };
+
+    const handleMouseUp = () => {
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState]);
+
+  useEffect(() => {
+    if (!selectionBox) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const pointer = getPointerInGrid(event.clientX, event.clientY);
+      setSelectionBox((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentX: pointer.x,
+              currentY: pointer.y,
+            }
+          : prev,
+      );
+    };
+
+    const handleMouseUp = () => {
+      setSelectionBox((current) => {
+        if (!current) {
+          return null;
+        }
+
+        const minX = Math.min(current.startX, current.currentX);
+        const maxX = Math.max(current.startX, current.currentX);
+        const minY = Math.min(current.startY, current.currentY);
+        const maxY = Math.max(current.startY, current.currentY);
+
+        const selectedIds = activeTrackNotes
+          .filter((note) => {
+            const noteLeft = note.start * GRID_COL_WIDTH;
+            const noteRight = noteLeft + note.length * GRID_COL_WIDTH;
+            const noteTop = note.pitch * GRID_ROW_HEIGHT + 2;
+            const noteBottom = noteTop + 20;
+
+            return noteRight >= minX && noteLeft <= maxX && noteBottom >= minY && noteTop <= maxY;
+          })
+          .map((note) => note.id);
+
+        setSelectedNoteIds(selectedIds);
+        return null;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [selectionBox, activeTrackNotes]);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -304,9 +700,8 @@ Use a utility like curl -L to download the hosted URLs.`;
             {tracks.map((track) => (
               <div
                 key={track.id}
-                onDoubleClick={() => setIsStitchInstructionOpen(true)}
-                title="Double-click to open Stitch instructions"
-                className="h-20 flex bg-surface-container-low/50 border-b border-outline-variant/5 cursor-default"
+                onDoubleClick={() => handleTrackDoubleClick(track.id)}
+                className="h-20 flex bg-surface-container-low/50 border-b border-outline-variant/5 cursor-pointer hover:bg-surface-container-low"
               >
                 <div className="w-48 bg-surface-container-high border-r border-outline-variant/10 p-3 flex flex-col justify-between">
                   <div className="flex items-center gap-2">
@@ -319,7 +714,30 @@ Use a utility like curl -L to download the hosted URLs.`;
                   </div>
                 </div>
                 <div className="flex-1 relative">
-                  <div className={`absolute inset-y-4 left-8 right-24 border ${track.clipClass}`}></div>
+                  <div className={`absolute inset-y-4 left-8 right-24 border ${track.clipClass} overflow-hidden`}>
+                    {track.notes.length > 0 &&
+                      track.notes.map((note) => {
+                        const maxSteps = Math.max(
+                          16,
+                          ...track.notes.map((item) => item.start + item.length),
+                        );
+                        const leftPercent = (note.start / maxSteps) * 100;
+                        const widthPercent = (note.length / maxSteps) * 100;
+                        const topPercent = (note.pitch / GRID_TOTAL_ROWS) * 100;
+
+                        return (
+                          <div
+                            key={note.id}
+                            className="absolute h-[3px] bg-primary/90"
+                            style={{
+                              left: `${leftPercent}%`,
+                              width: `${Math.max(widthPercent, 1)}%`,
+                              top: `${Math.min(topPercent, 95)}%`,
+                            }}
+                          ></div>
+                        );
+                      })}
+                  </div>
                 </div>
               </div>
             ))}
@@ -459,23 +877,307 @@ Use a utility like curl -L to download the hosted URLs.`;
         </div>
       )}
 
-      {isStitchInstructionOpen && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-[2px] z-[120] p-6">
-          <div className="w-full max-w-3xl bg-surface-container-highest border border-outline-variant/30 flex flex-col">
-            <div className="px-6 py-4 border-b border-outline-variant/20 flex items-center justify-between">
-              <h2 className="text-lg font-black tracking-tight uppercase text-on-surface">Stitch Instructions</h2>
+      {isPianoRollOpen && (
+        <div className="fixed inset-0 z-[120] bg-background flex flex-col overflow-hidden select-none">
+          <header className="bg-[#0e0e0e] text-[#f4ffc6] font-['Inter'] font-mono text-[11px] tracking-widest uppercase flex justify-between items-center w-full px-4 h-12">
+            <div className="flex items-center gap-8">
+              <span className="text-lg font-black tracking-tighter text-[#f4ffc6] uppercase">Bach Studio</span>
+              <span className="text-[9px] text-zinc-500 uppercase">Piano Roll · {activeTrackName}</span>
+            </div>
+            <button
+              onClick={() => setIsPianoRollOpen(false)}
+              className="text-zinc-400 hover:text-white p-1"
+              title="Close Piano Roll"
+            >
+              <span className="material-symbols-outlined">close</span>
+            </button>
+          </header>
+
+          <div className="flex flex-1 overflow-hidden">
+            <aside className="bg-[#131313] w-16 border-r-0 flex flex-col items-center py-4 space-y-1 z-40">
               <button
-                onClick={() => setIsStitchInstructionOpen(false)}
-                className="text-on-surface-variant hover:text-white"
-                title="Close"
+                onClick={() => setPianoTool('select')}
+                className={`w-12 h-12 flex flex-col items-center justify-center transition-all duration-75 ${pianoTool === 'select' ? 'bg-[#20201f] text-[#f4ffc6] border-l-2 border-[#f4ffc6]' : 'text-zinc-600 hover:bg-[#2c2c2c]'}`}
               >
-                <span className="material-symbols-outlined">close</span>
+                <span className="material-symbols-outlined text-[20px]">near_me</span>
+                <span className="text-[8px] font-bold mt-1 uppercase">Select</span>
               </button>
-            </div>
-            <div className="p-6">
-              <pre className="whitespace-pre-wrap text-sm leading-6 text-on-surface-variant font-mono">{stitchInstructionsText}</pre>
-            </div>
+              <button
+                onClick={() => setPianoTool('draw')}
+                className={`w-12 h-12 flex flex-col items-center justify-center transition-all duration-75 ${pianoTool === 'draw' ? 'bg-[#20201f] text-[#f4ffc6] border-l-2 border-[#f4ffc6]' : 'text-zinc-600 hover:bg-[#2c2c2c]'}`}
+              >
+                <span className="material-symbols-outlined text-[20px]">edit</span>
+                <span className="text-[8px] font-bold mt-1 uppercase">Draw</span>
+              </button>
+            </aside>
+
+            <main className="flex-1 flex flex-col bg-surface-container-low overflow-hidden">
+              <div className="h-10 bg-surface flex items-center px-4 gap-6 border-b border-outline-variant/20">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-mono uppercase text-on-surface-variant">Quantize</span>
+                  <div className="flex bg-surface-container-highest">
+                    <button className="px-2 py-1 text-[9px] font-mono text-primary bg-surface-bright">1/16</button>
+                    <button className="px-2 py-1 text-[9px] font-mono text-on-surface-variant hover:text-white">1/8</button>
+                    <button className="px-2 py-1 text-[9px] font-mono text-on-surface-variant hover:text-white">1/4</button>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsRecorderOpen(true)}
+                  className="flex items-center gap-1 px-2 py-1 text-[9px] font-mono uppercase border border-outline-variant/30 text-primary hover:bg-surface-bright transition-colors"
+                >
+                  <span className="material-symbols-outlined text-xs">mic</span>
+                  Humming AI
+                </button>
+                <button
+                  onClick={() => {
+                    void ensurePianoAudioReady();
+                  }}
+                  className="flex items-center gap-1 px-2 py-1 text-[9px] font-mono uppercase border border-outline-variant/30 text-primary hover:bg-surface-bright transition-colors"
+                >
+                  <span className="material-symbols-outlined text-xs">piano</span>
+                  {isAudioLoading
+                    ? 'Loading Piano...'
+                    : isAudioReady
+                      ? 'Piano Ready'
+                      : audioError
+                        ? 'Retry Piano Audio'
+                        : 'Enable Piano Audio'}
+                </button>
+                <div className="flex-1"></div>
+                <div className="flex items-center gap-4 text-[10px] font-mono text-primary">
+                  <span className="text-on-surface-variant">BPM:</span> {bpmLabel}
+                </div>
+              </div>
+              {audioError && (
+                <div className="px-4 py-1 text-[10px] font-mono text-error uppercase tracking-wide border-b border-error/30 bg-error/10">
+                  {audioError}
+                </div>
+              )}
+
+              <div className="flex-1 flex overflow-hidden">
+                <div
+                  ref={pianoKeysRef}
+                  onScroll={() => syncVerticalScroll('keys')}
+                  className="w-20 flex-shrink-0 bg-surface-container-highest overflow-y-auto overflow-x-hidden border-r border-outline-variant/20 no-scrollbar"
+                >
+                  {pianoRows.map((key) => (
+                    <div key={key.row} className="h-6 border-b border-black/30 relative">
+                      {key.isBlack ? (
+                        <div className="h-full w-[70%] bg-[#0a0a0a] border-r border-black/70"></div>
+                      ) : (
+                        <div className="h-full w-full bg-[#d8d8d8] border-r border-zinc-500/50"></div>
+                      )}
+                      {key.label && (
+                        <span className={`absolute right-1 bottom-0.5 text-[8px] font-bold ${key.isBlack ? 'text-zinc-200' : 'text-zinc-800'}`}>
+                          {key.label}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div
+                  ref={gridRef}
+                  onMouseDown={handleGridMouseDown}
+                  onDoubleClick={handleGridDoubleClick}
+                  onScroll={() => syncVerticalScroll('grid')}
+                  className="flex-1 relative overflow-auto select-none"
+                  style={{
+                    cursor: pianoTool === 'draw' ? 'crosshair' : 'default',
+                    backgroundSize: '40px 24px',
+                    backgroundImage:
+                      'linear-gradient(to right, #262626 1px, transparent 1px), linear-gradient(to bottom, #262626 1px, transparent 1px)',
+                  }}
+                >
+                  <div
+                    className="relative"
+                    style={{
+                      width: `${GRID_TOTAL_COLS * GRID_COL_WIDTH}px`,
+                      height: `${GRID_TOTAL_ROWS * GRID_ROW_HEIGHT}px`,
+                    }}
+                  >
+                    <div className="absolute top-0 bottom-0 left-64 w-[2px] bg-primary z-30 shadow-[0_0_10px_rgba(244,255,198,0.5)]"></div>
+                  {activeTrackNotes.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-zinc-500 font-mono text-[10px] uppercase tracking-widest">
+                        {pianoTool === 'draw'
+                          ? 'Empty Piano Roll · Click Grid To Add Notes'
+                          : 'Empty Piano Roll · Drag To Select Area / Switch To Draw To Add Notes'}
+                      </span>
+                    </div>
+                  )}
+                  {selectionBox && (
+                    <div
+                      className="absolute border border-primary bg-primary/20 pointer-events-none z-40"
+                      style={{
+                        left: `${Math.min(selectionBox.startX, selectionBox.currentX)}px`,
+                        top: `${Math.min(selectionBox.startY, selectionBox.currentY)}px`,
+                        width: `${Math.abs(selectionBox.currentX - selectionBox.startX)}px`,
+                        height: `${Math.abs(selectionBox.currentY - selectionBox.startY)}px`,
+                      }}
+                    ></div>
+                  )}
+                  {activeTrackNotes.map((note) => (
+                    <div
+                      key={note.id}
+                      data-note="1"
+                      onMouseDown={(event) => handleNoteMouseDown(event, note)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        updateActiveTrackNotes((notes) => notes.filter((item) => item.id !== note.id));
+                        if (selectedNoteIds.includes(note.id)) {
+                          setSelectedNoteIds((prev) => prev.filter((id) => id !== note.id));
+                        }
+                      }}
+                      className={`absolute h-[20px] text-black flex items-center px-2 text-[9px] font-bold border-l-2 ${pianoTool === 'select' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'} ${selectedNoteIds.includes(note.id) ? 'bg-primary border-primary-container ring-1 ring-white/60' : 'bg-primary/80 border-primary-container/70'}`}
+                      style={{
+                        top: `${note.pitch * GRID_ROW_HEIGHT + 2}px`,
+                        left: `${note.start * GRID_COL_WIDTH}px`,
+                        width: `${note.length * GRID_COL_WIDTH}px`,
+                      }}
+                      title="Select mode: click to select, drag to move, drag right resize handle to resize, right-click to delete"
+                    >
+                      NOTE
+                      {pianoTool === 'select' && (
+                        <span
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                            handleNoteMouseDown(event, note, 'resize');
+                          }}
+                          className="absolute right-0 top-0 h-full w-2 border-l border-black/30 bg-black/20 hover:bg-black/35 cursor-ew-resize"
+                          title="Resize note"
+                        ></span>
+                      )}
+                    </div>
+                  ))}
+                  </div>
+                </div>
+              </div>
+            </main>
           </div>
+
+          {isRecorderOpen && (
+            <div className="fixed inset-0 z-[130] bg-black/70 backdrop-blur-sm p-4">
+              <div className="w-full h-full border border-outline-variant/40 bg-background flex flex-col overflow-hidden">
+                <header className="bg-[#0e0e0e] border-b border-outline-variant/20 flex justify-between items-center w-full px-6 h-14 z-50">
+                  <div className="flex items-center gap-8">
+                    <h1 className="text-xl font-black tracking-tighter text-primary uppercase">Bach Studio</h1>
+                    <nav className="hidden md:flex gap-6 items-center">
+                      <span className="font-['Inter'] tracking-tight text-sm uppercase font-bold text-zinc-500">Dashboard</span>
+                      <span className="font-['Inter'] tracking-tight text-sm uppercase font-bold text-primary border-b-2 border-primary pb-1">Studio</span>
+                      <span className="font-['Inter'] tracking-tight text-sm uppercase font-bold text-zinc-500">Mixer</span>
+                    </nav>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button className="bg-primary text-on-primary font-['Inter'] tracking-tight text-sm uppercase font-bold px-4 py-2 flex items-center gap-2 hover:brightness-110 transition-all active:scale-95 duration-75">
+                      <span className="material-symbols-outlined text-sm">mic</span>
+                      Record Humming
+                    </button>
+                    <button
+                      onClick={() => setIsRecorderOpen(false)}
+                      className="p-2 text-zinc-500 hover:bg-surface-bright transition-all"
+                      title="Close Recorder"
+                    >
+                      <span className="material-symbols-outlined">close</span>
+                    </button>
+                  </div>
+                </header>
+
+                <main className="flex-1 flex overflow-hidden">
+                  <aside className="bg-surface-container-low border-r border-outline-variant/20 w-64 flex flex-col h-full py-4 shrink-0">
+                    <div className="px-6 mb-8">
+                      <h2 className="font-['Inter'] text-[11px] font-bold uppercase tracking-widest text-primary">Project Alpha</h2>
+                      <p className="font-mono text-[10px] text-zinc-500 mt-1 uppercase tracking-tighter">{bpmLabel} BPM / 4-4</p>
+                      <button className="mt-4 w-full border border-outline-variant/20 py-2 font-['Inter'] text-[11px] font-bold uppercase tracking-widest text-on-surface hover:bg-surface-bright transition-colors">
+                        New Track
+                      </button>
+                    </div>
+
+                    <nav className="flex-1 space-y-1">
+                      <div className="flex items-center gap-3 px-6 py-3 font-['Inter'] text-[11px] font-bold uppercase tracking-widest bg-surface-container text-primary border-r-4 border-primary">
+                        <span className="material-symbols-outlined text-lg">folder_open</span>
+                        Browser
+                      </div>
+                      <div className="flex items-center gap-3 px-6 py-3 font-['Inter'] text-[11px] font-bold uppercase tracking-widest text-zinc-400 hover:bg-surface-container transition-colors">
+                        <span className="material-symbols-outlined text-lg">psychology</span>
+                        AI Tools
+                      </div>
+                    </nav>
+                  </aside>
+
+                  <section className="flex-1 relative flex flex-col bg-surface-container-lowest overflow-hidden">
+                    <div className="absolute top-6 left-6 z-10 flex items-center gap-3">
+                      <div className="w-1.5 h-1.5 bg-primary animate-pulse"></div>
+                      <span className="font-mono text-[10px] tracking-widest text-primary uppercase">SYNC_ESTABLISHED_MS_24</span>
+                    </div>
+
+                    <div
+                      className="flex-1 flex items-center justify-center relative"
+                      style={{
+                        backgroundSize: '40px 40px',
+                        backgroundImage:
+                          'linear-gradient(to right, rgba(244,255,198,0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(244,255,198,0.05) 1px, transparent 1px)',
+                      }}
+                    >
+                      <div className="relative w-[360px] h-[360px] flex items-center justify-center">
+                        <div className="absolute inset-0 rounded-full border border-white/5"></div>
+                        <div className="absolute inset-3 rounded-full overflow-hidden">
+                          <svg viewBox="0 0 360 360" className="w-full h-full">
+                            <defs>
+                              <clipPath id="wheelClip">
+                                <circle cx="180" cy="180" r="168" />
+                              </clipPath>
+                            </defs>
+
+                            <g clipPath="url(#wheelClip)">
+                              <circle cx="180" cy="180" r="168" fill="#0f1116" />
+                              <path d="M180,180 L180,12 A168,168 0 0,1 311,72 Z" fill="rgba(255,255,255,0.06)" />
+                              <path d="M180,180 L311,72 A168,168 0 0,1 346,180 Z" fill="rgba(255,255,255,0.03)" />
+                              <path d="M180,180 L346,180 A168,168 0 0,1 311,288 Z" fill="rgba(255,255,255,0.06)" />
+                              <path d="M180,180 L311,288 A168,168 0 0,1 180,348 Z" fill="rgba(255,255,255,0.03)" />
+                              <path d="M180,180 L180,348 A168,168 0 0,1 49,288 Z" fill="rgba(255,255,255,0.06)" />
+                              <path d="M180,180 L49,288 A168,168 0 0,1 14,180 Z" fill="rgba(255,255,255,0.03)" />
+                              <path d="M180,180 L14,180 A168,168 0 0,1 49,72 Z" fill="rgba(255,255,255,0.06)" />
+
+                              <path d="M180,180 L311,288 A168,168 0 0,1 180,348 Z" fill="#FFB38A" fillOpacity="0.9" />
+                            </g>
+
+                            <circle cx="180" cy="180" r="100" fill="#000" stroke="#232323" strokeWidth="2" />
+                          </svg>
+                        </div>
+
+                        <div className="absolute inset-0 pointer-events-none text-[40px] font-black tracking-tight">
+                          <div className="absolute left-1/2 top-[34px] -translate-x-1/2 text-[#FFB38A] text-[20px]">D</div>
+                          <div className="absolute right-[76px] top-[84px] text-zinc-500 text-[20px]">E</div>
+                          <div className="absolute right-[46px] top-1/2 -translate-y-1/2 text-zinc-500 text-[20px]">F</div>
+                          <div className="absolute right-[82px] bottom-[86px] text-zinc-400 text-[20px]">G</div>
+                          <div className="absolute left-1/2 bottom-[34px] -translate-x-1/2 text-zinc-500 text-[20px]">A</div>
+                          <div className="absolute left-[82px] bottom-[86px] text-[#d7a892] text-[20px]">B</div>
+                          <div className="absolute left-[48px] top-1/2 -translate-y-1/2 text-zinc-500 text-[20px]">C</div>
+                        </div>
+
+                        <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+                          <div className="text-center flex flex-col items-center justify-center">
+                            <div className="font-black text-7xl tracking-tighter leading-none text-[#FFB38A]">D3</div>
+                            <div className="font-mono text-[8px] tracking-[0.24em] text-zinc-500 uppercase mt-3">146.83 HZ • CONFIDENCE 98%</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="h-32 bg-surface-container-low border-t border-outline-variant/10 flex items-center px-6">
+                      <div className="w-full h-16 border border-outline-variant/20 bg-surface-container-lowest relative">
+                        <div className="absolute inset-y-0 left-[12%] w-[10%] bg-primary/30 border-r border-primary/50"></div>
+                        <div className="absolute inset-y-0 left-[31%] w-[7%] bg-primary/20 border-r border-primary/40"></div>
+                        <div className="absolute inset-y-0 left-[57%] w-[12%] bg-primary/25 border-r border-primary/40"></div>
+                        <div className="absolute inset-y-0 left-[74%] w-[8%] bg-primary/20 border-r border-primary/40"></div>
+                      </div>
+                    </div>
+                  </section>
+                </main>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
