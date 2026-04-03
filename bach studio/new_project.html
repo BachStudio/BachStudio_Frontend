@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;300;400;500;700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+            font-size: 18px;
+        }
+        /* Custom scrollbar for DAW feel */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #0e0e0e; }
+        ::-webkit-scrollbar-thumb { background: #2c2c2c; }
+        ::-webkit-scrollbar-thumb:hover { background: #f4ffc6; }
+        
+        .monospaced { font-family: 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace; }
+        .glass-panel {
+            background: rgba(32, 32, 31, 0.8);
+            backdrop-filter: blur(12px);
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "tertiary-container": "#fcdc43",
+                      "on-secondary-fixed": "#3f3f3f",
+                      "on-primary-fixed": "#3c4a00",
+                      "tertiary-dim": "#edce35",
+                      "surface-container-lowest": "#000000",
+                      "primary": "#f4ffc6",
+                      "surface-variant": "#262626",
+                      "secondary-container": "#474746",
+                      "outline-variant": "#484847",
+                      "secondary": "#e4e2e1",
+                      "on-error": "#450900",
+                      "on-secondary": "#525151",
+                      "primary-fixed-dim": "#c4ec00",
+                      "on-tertiary": "#665600",
+                      "on-surface": "#ffffff",
+                      "on-secondary-container": "#d2d0cf",
+                      "tertiary-fixed": "#fcdc43",
+                      "primary-dim": "#c7ef00",
+                      "on-tertiary-fixed-variant": "#675700",
+                      "on-surface-variant": "#adaaaa",
+                      "on-primary": "#546600",
+                      "error-dim": "#d53d18",
+                      "error": "#ff7351",
+                      "primary-container": "#d1fc00",
+                      "error-container": "#b92902",
+                      "inverse-primary": "#546600",
+                      "surface-container-high": "#20201f",
+                      "on-tertiary-container": "#5c4e00",
+                      "surface-bright": "#2c2c2c",
+                      "surface-tint": "#f4ffc6",
+                      "outline": "#767575",
+                      "secondary-fixed": "#e4e2e1",
+                      "background": "#0e0e0e",
+                      "on-secondary-fixed-variant": "#5c5b5b",
+                      "on-error-container": "#ffd2c8",
+                      "surface": "#0e0e0e",
+                      "surface-dim": "#0e0e0e",
+                      "on-primary-fixed-variant": "#556800",
+                      "surface-container-low": "#131313",
+                      "secondary-dim": "#d6d4d3",
+                      "on-tertiary-fixed": "#473b00",
+                      "surface-container-highest": "#262626",
+                      "inverse-surface": "#fcf9f8",
+                      "primary-fixed": "#d1fc00",
+                      "on-background": "#ffffff",
+                      "secondary-fixed-dim": "#d6d4d3",
+                      "tertiary-fixed-dim": "#edce35",
+                      "surface-container": "#1a1a1a",
+                      "inverse-on-surface": "#565555",
+                      "on-primary-container": "#4c5d00",
+                      "tertiary": "#ffeb9c"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0px",
+                      "lg": "0px",
+                      "xl": "0px",
+                      "full": "0px"
+              },
+              "fontFamily": {
+                      "headline": ["Inter"],
+                      "body": ["Inter"],
+                      "label": ["Inter"]
+              }
+            },
+          },
+        }
+      </script>
+</head>
+<body class="bg-background text-on-background min-h-screen flex flex-col overflow-hidden">
+<!-- TopNavBar -->
+<header class="bg-[#0e0e0e] flex justify-between items-center w-full px-4 h-12 border-b-0">
+<div class="flex items-center gap-8">
+<span class="text-lg font-black tracking-tighter text-[#f4ffc6] uppercase">Bach Studio</span>
+<nav class="hidden md:flex gap-6 items-center">
+<a class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase text-[#f4ffc6] border-b-2 border-[#f4ffc6] pb-1 hover:bg-[#2c2c2c] transition-colors" href="#">File</a>
+<a class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Edit</a>
+<a class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Track</a>
+<a class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Mix</a>
+<a class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">View</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2">
+<button class="p-2 text-zinc-500 hover:bg-[#2c2c2c] transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<button class="p-2 text-zinc-500 hover:bg-[#2c2c2c] transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+<button class="font-['Inter'] font-mono text-[11px] tracking-widest uppercase bg-primary text-on-primary px-4 py-1.5 hover:opacity-90 active:scale-95 transition-all">Export</button>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- SideNavBar -->
+<aside class="bg-[#131313] flex flex-col items-center py-4 space-y-1 w-16 border-r-0">
+<div class="mb-4 text-center">
+<p class="font-['Inter'] text-[10px] font-bold uppercase text-zinc-600">TOOLS</p>
+</div>
+<button class="w-12 h-12 flex flex-col items-center justify-center bg-[#20201f] text-[#f4ffc6] border-l-2 border-[#f4ffc6] hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="near_me">near_me</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Select</span>
+</button>
+<button class="w-12 h-12 flex flex-col items-center justify-center text-zinc-600 hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="content_cut">content_cut</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Cut</span>
+</button>
+<button class="w-12 h-12 flex flex-col items-center justify-center text-zinc-600 hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="edit">edit</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Draw</span>
+</button>
+<button class="w-12 h-12 flex flex-col items-center justify-center text-zinc-600 hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="volume_off">volume_off</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Mute</span>
+</button>
+<button class="w-12 h-12 flex flex-col items-center justify-center text-zinc-600 hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="search">search</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Zoom</span>
+</button>
+<button class="w-12 h-12 flex flex-col items-center justify-center text-zinc-600 hover:bg-[#2c2c2c] transition-all duration-75">
+<span class="material-symbols-outlined" data-icon="swap_horiz">swap_horiz</span>
+<span class="font-['Inter'] text-[8px] font-bold uppercase mt-1">Slip</span>
+</button>
+</aside>
+<!-- Main Workspace -->
+<main class="flex-1 bg-surface-container-lowest p-8 flex flex-col items-center justify-center overflow-y-auto">
+<div class="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
+<!-- Setup Column -->
+<div class="lg:col-span-5 space-y-8">
+<div>
+<h1 class="text-4xl font-black tracking-tighter uppercase mb-2">New Project</h1>
+<p class="text-on-surface-variant font-mono text-[10px] tracking-widest uppercase">Initializing Core Audio Engine v2.4...</p>
+</div>
+<div class="space-y-6">
+<!-- Project ID -->
+<div class="space-y-2">
+<label class="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Project ID</label>
+<input class="w-full bg-surface-container-highest border-0 border-b border-outline-variant/20 focus:ring-0 focus:border-primary text-primary monospaced text-sm px-0 py-2 transition-all" type="text" value="SESSION_2023_X4"/>
+</div>
+<!-- Technical Specs Grid -->
+<div class="grid grid-cols-2 gap-4">
+<div class="space-y-2">
+<label class="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Tempo (BPM)</label>
+<div class="flex items-center gap-2 bg-surface-container-highest p-1">
+<input class="w-full bg-transparent border-0 focus:ring-0 text-primary monospaced text-lg font-bold p-1" type="number" value="128"/>
+<div class="flex flex-col gap-0.5 pr-2">
+<button class="text-zinc-600 hover:text-primary"><span class="material-symbols-outlined !text-[14px]">expand_less</span></button>
+<button class="text-zinc-600 hover:text-primary"><span class="material-symbols-outlined !text-[14px]">expand_more</span></button>
+</div>
+</div>
+</div>
+<div class="space-y-2">
+<label class="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Key</label>
+<select class="w-full bg-surface-container-highest border-0 focus:ring-0 text-primary monospaced text-sm py-2 px-3 appearance-none">
+<option>C Minor</option>
+<option>A Major</option>
+<option>F# Phrygian</option>
+<option>D Dorian</option>
+</select>
+</div>
+</div>
+<!-- Sample Rate -->
+<div class="space-y-2">
+<label class="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Sample Rate</label>
+<div class="grid grid-cols-2 gap-2">
+<button class="bg-primary text-on-primary py-3 font-mono text-xs font-bold border border-primary">48kHz</button>
+<button class="bg-surface-container-highest text-on-surface-variant py-3 font-mono text-xs font-bold border border-outline-variant/20 hover:border-primary/50 transition-colors">96kHz</button>
+</div>
+</div>
+</div>
+<div class="pt-4">
+<button class="w-full py-5 bg-primary text-on-primary font-black uppercase tracking-widest text-sm hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-3">
+                            Initialize Session
+                            <span class="material-symbols-outlined" data-weight="fill">play_arrow</span>
+</button>
+</div>
+</div>
+<!-- Template Selection -->
+<div class="lg:col-span-7">
+<label class="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Template Selection</label>
+<div class="grid grid-cols-2 gap-4">
+<!-- Template Card: Vocal Mask -->
+<div class="group relative aspect-[4/3] bg-surface-container p-4 flex flex-col justify-between cursor-pointer border-2 border-primary">
+<div class="absolute inset-0 opacity-20 group-hover:opacity-40 transition-opacity">
+<img alt="studio waveform" class="w-full h-full object-cover" data-alt="close-up of a high-tech studio mixer with glowing green lights and digital waveforms in a dark environment" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBNtfLeQLCUPHbu7FMxyQagD47CDW8WFxYgbiioBiquIo92vwNiKk1jbSV1HS4r4vX28tOAfInRXMWquGnzhEfA-m3RnbzLBrWQyxvXKsy_CENEJ8qhGCpt5OSyb-tJon0VvN0xYXJ3aXB2sszdV4VnqrYwgx__031H_Q9ZoRPAdkFnr9VRsMkbSb4TjjHl08RmMSE6Kem1ConfC9okyKT0oH_XlQRooxwrioWG9cQLJmTbiT0slpVC4lXDPn3ttaHgXvj1MJWS5nDL"/>
+</div>
+<div class="relative z-10 flex justify-between items-start">
+<span class="material-symbols-outlined text-primary" data-weight="fill">mic_external_on</span>
+<span class="bg-primary text-on-primary text-[8px] font-bold px-1.5 py-0.5 uppercase tracking-tighter">Selected</span>
+</div>
+<div class="relative z-10">
+<h3 class="font-bold text-sm uppercase text-white mb-1">Vocal Mask</h3>
+<p class="text-[9px] text-zinc-400 uppercase tracking-wider">(Humming Engine)</p>
+</div>
+</div>
+<!-- Template Card: Default Empty -->
+<div class="group relative aspect-[4/3] bg-surface-container p-4 flex flex-col justify-between cursor-pointer border border-outline-variant/20 hover:border-primary/50 transition-all">
+<div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity">
+<img alt="minimalism" class="w-full h-full object-cover" data-alt="abstract dark grey technical grid pattern with soft minimal shadows and clean industrial aesthetic" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA3f1u_i7dwkMCpVCMBUUGhOoRG-yxl9NwjOFFt4PVY1z2bnKDtHF8m_ZELMKZTOK3ajQJR45ceXUnyHu56w69C8faA7YZHFvgFW4adAY6ouTLiXEQB8wqEWUqPPmeb3sGDQ2q_XOsInFfzDg5uwO8tSdSmvG6mri9RikA5F9z40fhgz3-E4mgQ_PuQMW8TWECccQgrC6bjj6KSNb7I5-YIPbzGD4JAfUcordly99vZhZ0drtKKI1pMGX0PXgfKsqVmjbRwjCEVKCwx"/>
+</div>
+<div class="relative z-10 flex justify-between items-start">
+<span class="material-symbols-outlined text-zinc-500 group-hover:text-primary transition-colors">layers_clear</span>
+</div>
+<div class="relative z-10">
+<h3 class="font-bold text-sm uppercase text-zinc-400 group-hover:text-white transition-colors">Default Empty</h3>
+<p class="text-[9px] text-zinc-500 uppercase tracking-wider">Clean Workspace</p>
+</div>
+</div>
+<!-- Template Card: Orchestral Hybrid -->
+<div class="group relative aspect-[4/3] bg-surface-container p-4 flex flex-col justify-between cursor-pointer border border-outline-variant/20 hover:border-primary/50 transition-all">
+<div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity">
+<img alt="orchestra" class="w-full h-full object-cover" data-alt="blurred silhouettes of an orchestra in a grand hall with warm spotlighting and deep shadows" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCJmJSDfmTI32T0TJiFcVKUCz2F0Yv6y6XJCzEIR6_y1JwcO_rm6enJQI55blvaGealDSZQ8Yrj_SlmASi26jyob3Ca9fY7p4kMFL_Vp8rOefuk4BVYTFWziU9tzBykycb1L_ScJAH6EBXqPb9vSIgkyLYgzvHNzHkjXZSbXSsOiwfuHn8q3shaYJCX9XlFhxwf4CRWqGSppgTEuMe8rfp5s7ROTjqyfFEmN9RFSLuXnjirrW-L7CtWldUIitNhpM3HMUuxSB7G8GEF"/>
+</div>
+<div class="relative z-10 flex justify-between items-start">
+<span class="material-symbols-outlined text-zinc-500 group-hover:text-primary transition-colors">vibration</span>
+</div>
+<div class="relative z-10">
+<h3 class="font-bold text-sm uppercase text-zinc-400 group-hover:text-white transition-colors">Orchestral Hybrid</h3>
+<p class="text-[9px] text-zinc-500 uppercase tracking-wider">Strings &amp; Synth Layers</p>
+</div>
+</div>
+<!-- Template Card: Lo-Fi Degradation -->
+<div class="group relative aspect-[4/3] bg-surface-container p-4 flex flex-col justify-between cursor-pointer border border-outline-variant/20 hover:border-primary/50 transition-all">
+<div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity">
+<img alt="vintage cassette" class="w-full h-full object-cover" data-alt="close-up of a vintage cassette tape mechanism with copper wires and worn plastic textures in dim light" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD-hSZ2zGnaqhzivwr2USxccF4mU0VUNPa772nhq9XUwJYX8KKdIZJqeuZTZHQXPBTejNt2p6fMLscPUttrFF6vxIRCjVVa5_pOT-ZsBIYwKnOE0ThodrMv5EUiUylumbGS_N5tLAy1Dj1JY01HafoB6B4AdZ59FJI5So-VRxUZf8iV0BnBX5LNidXSNiMhT3Ya73sL8q47x7x4gLFLP-zIMTI9ar9BSUlniqSGOvyIIZgevIKtEuGtCO5oJqP2UDHsF_eU743oiko6"/>
+</div>
+<div class="relative z-10 flex justify-between items-start">
+<span class="material-symbols-outlined text-zinc-500 group-hover:text-primary transition-colors">radio</span>
+</div>
+<div class="relative z-10">
+<h3 class="font-bold text-sm uppercase text-zinc-400 group-hover:text-white transition-colors">Lo-Fi Degradation</h3>
+<p class="text-[9px] text-zinc-500 uppercase tracking-wider">Analog Warmth &amp; Hiss</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<!-- Footer -->
+<footer class="bg-[#0e0e0e] fixed bottom-0 w-full flex justify-between items-center px-4 h-6 border-t border-[#484847]/20 z-50">
+<span class="font-mono text-[9px] uppercase tracking-tighter text-zinc-500">Bach Studio Engine v2.4 | CPU: 14% | RAM: 2.4GB</span>
+<div class="flex items-center gap-4">
+<span class="font-mono text-[9px] uppercase tracking-tighter text-zinc-600 hover:text-white transition-colors cursor-pointer">Buffer: 128</span>
+<span class="font-mono text-[9px] uppercase tracking-tighter text-[#f4ffc6]">44.1kHz</span>
+<span class="font-mono text-[9px] uppercase tracking-tighter text-zinc-600 hover:text-white transition-colors cursor-pointer">24-bit</span>
+</div>
+</footer>
+</body></html>
