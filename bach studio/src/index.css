@@ -6,3 +6,111 @@
 .no-scrollbar::-webkit-scrollbar {
 	display: none;
 }
+
+.editor-control-card {
+	height: 40px;
+	padding: 5px 10px;
+	border: 1px solid #2f2f2f;
+	background: linear-gradient(180deg, #1b1b1b 0%, #161616 100%);
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 3px;
+	border-radius: 2px;
+}
+
+.editor-control-label {
+	font-size: 9px;
+	line-height: 1;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: #767676;
+}
+
+.editor-control-select {
+	height: 20px;
+	background: #242424;
+	border: 1px solid #393939;
+	color: #dfdfdf;
+	font-size: 11px;
+	padding: 0 8px;
+	outline: none;
+}
+
+.editor-control-select:focus {
+	border-color: #f4ffc6;
+	box-shadow: 0 0 0 1px rgba(244, 255, 198, 0.22);
+}
+
+.editor-fader {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 140px;
+	height: 7px;
+	border-radius: 999px;
+	border: 1px solid #3b3b3b;
+	outline: none;
+	cursor: pointer;
+}
+
+.editor-fader::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 14px;
+	height: 14px;
+	border-radius: 999px;
+	border: 1px solid #111;
+	background: #f6f6f6;
+	box-shadow: 0 0 0 2px #191919;
+	margin-top: -4px;
+}
+
+.editor-fader::-moz-range-thumb {
+	width: 14px;
+	height: 14px;
+	border-radius: 999px;
+	border: 1px solid #111;
+	background: #f6f6f6;
+	box-shadow: 0 0 0 2px #191919;
+}
+
+.editor-fader::-moz-range-track {
+	height: 7px;
+	background: transparent;
+	border: none;
+}
+
+.editor-step-button {
+	width: 18px;
+	height: 18px;
+	border: 1px solid #404040;
+	background: #1f1f1f;
+	color: #d7d7d7;
+	font-size: 12px;
+	line-height: 1;
+	font-weight: 700;
+	cursor: pointer;
+	padding: 0;
+}
+
+.editor-step-button:hover {
+	background: #292929;
+	border-color: #565656;
+}
+
+.editor-value-badge {
+	min-width: 46px;
+	height: 18px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 6px;
+	border: 1px solid #3f3f3f;
+	background: #141414;
+	font-size: 10px;
+	font-weight: 700;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	color: #f4ffc6;
+}
