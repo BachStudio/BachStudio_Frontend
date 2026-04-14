@@ -735,27 +735,16 @@ export function MainEditor() {
     setIsLoopPlaybackOn((prev) => !prev);
   };
 
-  const handleLoopRangeChange = (part: 'start' | 'end', rawValue: string) => {
-    const parsed = Number.parseFloat(rawValue);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
+  const handleLoopRangeUpdate = (nextRange: { startBeat: number; endBeat: number }) => {
+    const loopSnapBeats = Math.max(CLIP_SNAP_BEATS, 1 / PIANO_STEPS_PER_BEAT);
+    const snapBeat = (value: number) => Math.round(value / loopSnapBeats) * loopSnapBeats;
+    const minLen = loopSnapBeats;
+    const normalizedStart = clamp(snapBeat(nextRange.startBeat), 0, TIMELINE_TOTAL_BEATS - minLen);
+    const normalizedEnd = clamp(snapBeat(nextRange.endBeat), normalizedStart + minLen, TIMELINE_TOTAL_BEATS);
 
-    setLoopRange((current) => {
-      const minLen = 1 / PIANO_STEPS_PER_BEAT;
-      if (part === 'start') {
-        const nextStart = clamp(parsed, 0, TIMELINE_TOTAL_BEATS - minLen);
-        return {
-          startBeat: nextStart,
-          endBeat: clamp(current.endBeat, nextStart + minLen, TIMELINE_TOTAL_BEATS),
-        };
-      }
-
-      const nextEnd = clamp(parsed, current.startBeat + minLen, TIMELINE_TOTAL_BEATS);
-      return {
-        startBeat: current.startBeat,
-        endBeat: nextEnd,
-      };
+    setLoopRange({
+      startBeat: normalizedStart,
+      endBeat: normalizedEnd,
     });
   };
 
@@ -1811,34 +1800,6 @@ export function MainEditor() {
             >
               Paste MIDI
             </button>
-
-            <div className="ml-auto editor-control-card w-[250px]">
-              <span className="editor-control-label">Loop Range</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  max={TIMELINE_TOTAL_BEATS}
-                  step={1}
-                  value={Math.round(loopRange.startBeat)}
-                  onChange={(event) => handleLoopRangeChange('start', event.target.value)}
-                  className="editor-mini-input"
-                />
-                <span className="text-zinc-500 text-[10px]">to</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={TIMELINE_TOTAL_BEATS}
-                  step={1}
-                  value={Math.round(loopRange.endBeat)}
-                  onChange={(event) => handleLoopRangeChange('end', event.target.value)}
-                  className="editor-mini-input"
-                />
-                <span className={`editor-loop-badge ${isLoopPlaybackOn ? 'editor-loop-badge-on' : ''}`}>
-                  {isLoopPlaybackOn ? 'ON' : 'OFF'}
-                </span>
-              </div>
-            </div>
           </div>
         ) : (
           <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Select a track to edit sound and routing</span>
@@ -1881,6 +1842,9 @@ export function MainEditor() {
           selectedTrackId={selectedTrackId}
           selectedTrackName={selectedTrack?.name ?? null}
           playheadBeat={playheadBeat}
+          isLoopPlaybackOn={isLoopPlaybackOn}
+          loopRange={loopRange}
+          onLoopRangeChange={handleLoopRangeUpdate}
           onSeekBeat={handleSeekBeat}
           onOpenAddTrack={() => setIsAddTrackModalOpen(true)}
           onTrackClick={handleTrackClick}

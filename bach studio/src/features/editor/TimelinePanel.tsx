@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
+  CLIP_SNAP_BEATS,
   PIANO_STEPS_PER_BEAT,
   GRID_TOTAL_ROWS,
   TIMELINE_BEATS_PER_BAR,
@@ -13,6 +15,9 @@ type TimelinePanelProps = {
   selectedTrackId: number | null;
   selectedTrackName: string | null;
   playheadBeat: number;
+  isLoopPlaybackOn: boolean;
+  loopRange: { startBeat: number; endBeat: number };
+  onLoopRangeChange: (nextRange: { startBeat: number; endBeat: number }) => void;
   onSeekBeat: (beat: number) => void;
   onOpenAddTrack: () => void;
   onTrackClick: (trackId: number) => void;
@@ -23,11 +28,21 @@ type TimelinePanelProps = {
   onClipResizeMouseDown: (event: ReactMouseEvent<HTMLSpanElement>, trackId: number, clip: Clip) => void;
 };
 
+type LoopDragState = {
+  mode: 'create' | 'move' | 'start' | 'end';
+  anchorBeat: number;
+  initialStartBeat: number;
+  initialEndBeat: number;
+};
+
 export function TimelinePanel({
   tracks,
   selectedTrackId,
   selectedTrackName,
   playheadBeat,
+  isLoopPlaybackOn,
+  loopRange,
+  onLoopRangeChange,
   onSeekBeat,
   onOpenAddTrack,
   onTrackClick,
@@ -37,7 +52,37 @@ export function TimelinePanel({
   onClipDoubleClick,
   onClipResizeMouseDown,
 }: TimelinePanelProps) {
+  const [loopDragState, setLoopDragState] = useState<LoopDragState | null>(null);
+  const rulerRef = useRef<HTMLDivElement | null>(null);
   const playheadPercent = Math.max(0, Math.min((playheadBeat / TIMELINE_TOTAL_BEATS) * 100, 100));
+  const clampBeat = (value: number) => Math.max(0, Math.min(value, TIMELINE_TOTAL_BEATS));
+  const loopSnapBeats = Math.max(CLIP_SNAP_BEATS, 1 / PIANO_STEPS_PER_BEAT);
+  const minLoopLengthBeats = loopSnapBeats;
+  const snapBeat = (value: number) => clampBeat(Math.round(value / loopSnapBeats) * loopSnapBeats);
+
+  const normalizeLoopRange = (startBeat: number, endBeat: number) => {
+    const normalizedStart = Math.max(0, Math.min(snapBeat(startBeat), TIMELINE_TOTAL_BEATS - minLoopLengthBeats));
+    const normalizedEnd = Math.max(normalizedStart + minLoopLengthBeats, Math.min(snapBeat(endBeat), TIMELINE_TOTAL_BEATS));
+    return {
+      startBeat: normalizedStart,
+      endBeat: normalizedEnd,
+    };
+  };
+
+  const beatFromClientX = (clientX: number) => {
+    if (!rulerRef.current) {
+      return 0;
+    }
+
+    const rect = rulerRef.current.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return 0;
+    }
+
+    const ratio = (clientX - rect.left) / rect.width;
+    return clampBeat(ratio * TIMELINE_TOTAL_BEATS);
+  };
+
   const getTrackSoundLabel = (track: Track) => {
     if (track.type === 'Instrument') {
       return `Inst: ${track.instrumentPresetId}`;
@@ -48,23 +93,93 @@ export function TimelinePanel({
     if (track.type === 'Audio') {
       return `Src: ${track.audioSourceId}`;
     }
-    if (track.type === 'Loop') {
-      return `Loop: ${track.loopSourceId}`;
-    }
 
     return `Gain: ${track.busGainDb.toFixed(0)}dB`;
   };
 
   const handleRulerClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    if (rect.width <= 0) {
+    const beat = snapBeat(beatFromClientX(event.clientX));
+    onSeekBeat(beat);
+  };
+
+  const startLoopDrag = (
+    event: ReactMouseEvent<HTMLDivElement | HTMLSpanElement>,
+    mode: LoopDragState['mode'],
+  ) => {
+    if (event.button !== 0) {
       return;
     }
 
-    const ratio = (event.clientX - rect.left) / rect.width;
-    const beat = Math.max(0, Math.min(Math.floor(ratio * TIMELINE_TOTAL_BEATS), TIMELINE_TOTAL_BEATS));
-    onSeekBeat(beat);
+    event.stopPropagation();
+    event.preventDefault();
+    const anchorBeat = snapBeat(beatFromClientX(event.clientX));
+    setLoopDragState({
+      mode,
+      anchorBeat,
+      initialStartBeat: loopRange.startBeat,
+      initialEndBeat: loopRange.endBeat,
+    });
   };
+
+  useEffect(() => {
+    if (!loopDragState) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const currentBeat = snapBeat(beatFromClientX(event.clientX));
+
+      if (loopDragState.mode === 'create') {
+        const nextStart = Math.min(loopDragState.anchorBeat, currentBeat);
+        const nextEnd = Math.max(loopDragState.anchorBeat, currentBeat);
+        onLoopRangeChange(normalizeLoopRange(nextStart, nextEnd));
+        return;
+      }
+
+      if (loopDragState.mode === 'move') {
+        const deltaBeats = currentBeat - loopDragState.anchorBeat;
+        const width = loopDragState.initialEndBeat - loopDragState.initialStartBeat;
+        let nextStart = loopDragState.initialStartBeat + deltaBeats;
+        let nextEnd = loopDragState.initialEndBeat + deltaBeats;
+
+        if (nextStart < 0) {
+          nextStart = 0;
+          nextEnd = width;
+        }
+        if (nextEnd > TIMELINE_TOTAL_BEATS) {
+          nextEnd = TIMELINE_TOTAL_BEATS;
+          nextStart = TIMELINE_TOTAL_BEATS - width;
+        }
+
+        onLoopRangeChange(normalizeLoopRange(nextStart, nextEnd));
+        return;
+      }
+
+      if (loopDragState.mode === 'start') {
+        const nextStart = Math.min(currentBeat, loopDragState.initialEndBeat - minLoopLengthBeats);
+        onLoopRangeChange(normalizeLoopRange(nextStart, loopDragState.initialEndBeat));
+        return;
+      }
+
+      const nextEnd = Math.max(currentBeat, loopDragState.initialStartBeat + minLoopLengthBeats);
+      onLoopRangeChange(normalizeLoopRange(loopDragState.initialStartBeat, nextEnd));
+    };
+
+    const handleMouseUp = () => {
+      setLoopDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [loopDragState, onLoopRangeChange]);
+
+  const loopLeftPercent = (loopRange.startBeat / TIMELINE_TOTAL_BEATS) * 100;
+  const loopWidthPercent = Math.max(((loopRange.endBeat - loopRange.startBeat) / TIMELINE_TOTAL_BEATS) * 100, 0.8);
 
   return (
     <section className="flex-1 flex flex-col min-w-0 bg-surface">
@@ -72,20 +187,45 @@ export function TimelinePanel({
         <div className="w-48 border-r border-outline-variant/20 h-full flex items-center px-4">
           <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Track List</span>
         </div>
-        <div className="flex-1 h-full relative overflow-hidden cursor-pointer" onClick={handleRulerClick}>
+        <div ref={rulerRef} className="flex-1 h-full relative overflow-hidden cursor-pointer" onClick={handleRulerClick}>
+          <div
+            className="absolute top-0 left-0 right-0 h-2 bg-black/35 border-b border-white/10"
+            onMouseDown={(event) => startLoopDrag(event, 'create')}
+          >
+            <div
+              className={`absolute top-0 bottom-0 ${isLoopPlaybackOn ? 'bg-[#c7251b]/80' : 'bg-[#8e3a34]/45'} border border-[#ff6a5c]/90 cursor-move`}
+              style={{ left: `${loopLeftPercent}%`, width: `${loopWidthPercent}%` }}
+              onMouseDown={(event) => startLoopDrag(event, 'move')}
+              title="Drag to move loop range"
+            >
+              <span
+                className="absolute left-0 top-0 bottom-0 w-1.5 bg-[#ffd9d4]/70 cursor-ew-resize"
+                onMouseDown={(event) => startLoopDrag(event, 'start')}
+                title="Drag loop start"
+              ></span>
+              <span
+                className="absolute right-0 top-0 bottom-0 w-1.5 bg-[#ffd9d4]/70 cursor-ew-resize"
+                onMouseDown={(event) => startLoopDrag(event, 'end')}
+                title="Drag loop end"
+              ></span>
+            </div>
+          </div>
+
           {Array.from({ length: TIMELINE_TOTAL_BARS }, (_, barIndex) => (
             <button
               key={`ruler-num-${barIndex}`}
+              type="button"
               onClick={(event) => {
                 event.stopPropagation();
                 onSeekBeat(barIndex * TIMELINE_BEATS_PER_BAR);
               }}
-              className="absolute top-0.5 text-[9px] font-mono text-zinc-300 hover:text-primary"
+              className="absolute top-[2px] text-[9px] font-mono text-zinc-300 hover:text-primary bg-transparent"
               style={{ left: `calc(${(barIndex / TIMELINE_TOTAL_BARS) * 100}% + 4px)` }}
             >
               {barIndex + 1}
             </button>
           ))}
+
           {Array.from({ length: TIMELINE_TOTAL_BEATS + 1 }, (_, beatBoundary) => {
             const isBar = beatBoundary % TIMELINE_BEATS_PER_BAR === 0;
             return (
@@ -96,6 +236,7 @@ export function TimelinePanel({
               ></span>
             );
           })}
+
           <div
             className="absolute top-0 bottom-0 w-px bg-primary z-30 pointer-events-none"
             style={{ left: `${playheadPercent}%` }}
@@ -214,9 +355,9 @@ export function TimelinePanel({
                   </div>
 
                   <span className="absolute top-1 left-1 text-[9px] font-bold text-white uppercase">{track.type}</span>
-                  {track.type === 'Audio' || track.type === 'Loop' ? (
+                  {track.type === 'Audio' ? (
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-primary/80 uppercase tracking-wider">
-                      {track.type === 'Loop' ? 'Loop Clip' : 'Audio Clip'}
+                      Audio Clip
                     </span>
                   ) : clip.notes.length === 0 ? (
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-primary/70 uppercase tracking-wider">
