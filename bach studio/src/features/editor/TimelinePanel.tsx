@@ -13,6 +13,7 @@ type TimelinePanelProps = {
   selectedTrackId: number | null;
   selectedTrackName: string | null;
   playheadBeat: number;
+  onSeekBeat: (beat: number) => void;
   onOpenAddTrack: () => void;
   onTrackClick: (trackId: number) => void;
   onTrackDoubleClick: (trackId: number) => void;
@@ -27,6 +28,7 @@ export function TimelinePanel({
   selectedTrackId,
   selectedTrackName,
   playheadBeat,
+  onSeekBeat,
   onOpenAddTrack,
   onTrackClick,
   onTrackDoubleClick,
@@ -46,8 +48,22 @@ export function TimelinePanel({
     if (track.type === 'Audio') {
       return `Src: ${track.audioSourceId}`;
     }
+    if (track.type === 'Loop') {
+      return `Loop: ${track.loopSourceId}`;
+    }
 
     return `Gain: ${track.busGainDb.toFixed(0)}dB`;
+  };
+
+  const handleRulerClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return;
+    }
+
+    const ratio = (event.clientX - rect.left) / rect.width;
+    const beat = Math.max(0, Math.min(Math.floor(ratio * TIMELINE_TOTAL_BEATS), TIMELINE_TOTAL_BEATS));
+    onSeekBeat(beat);
   };
 
   return (
@@ -56,15 +72,19 @@ export function TimelinePanel({
         <div className="w-48 border-r border-outline-variant/20 h-full flex items-center px-4">
           <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Track List</span>
         </div>
-        <div className="flex-1 h-full relative overflow-hidden">
+        <div className="flex-1 h-full relative overflow-hidden cursor-pointer" onClick={handleRulerClick}>
           {Array.from({ length: TIMELINE_TOTAL_BARS }, (_, barIndex) => (
-            <span
+            <button
               key={`ruler-num-${barIndex}`}
-              className="absolute top-0.5 text-[9px] font-mono text-zinc-300"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSeekBeat(barIndex * TIMELINE_BEATS_PER_BAR);
+              }}
+              className="absolute top-0.5 text-[9px] font-mono text-zinc-300 hover:text-primary"
               style={{ left: `calc(${(barIndex / TIMELINE_TOTAL_BARS) * 100}% + 4px)` }}
             >
               {barIndex + 1}
-            </span>
+            </button>
           ))}
           {Array.from({ length: TIMELINE_TOTAL_BEATS + 1 }, (_, beatBoundary) => {
             const isBar = beatBoundary % TIMELINE_BEATS_PER_BAR === 0;
@@ -194,9 +214,9 @@ export function TimelinePanel({
                   </div>
 
                   <span className="absolute top-1 left-1 text-[9px] font-bold text-white uppercase">{track.type}</span>
-                  {track.type === 'Audio' ? (
+                  {track.type === 'Audio' || track.type === 'Loop' ? (
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-primary/80 uppercase tracking-wider">
-                      Audio Clip
+                      {track.type === 'Loop' ? 'Loop Clip' : 'Audio Clip'}
                     </span>
                   ) : clip.notes.length === 0 ? (
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-primary/70 uppercase tracking-wider">

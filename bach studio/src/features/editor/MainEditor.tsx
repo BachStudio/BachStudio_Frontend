@@ -4,21 +4,25 @@ import { useSearchParams } from 'react-router-dom';
 import * as Tone from 'tone';
 import { AddTrackModal } from './AddTrackModal';
 import {
+  AUDIO_OUTPUT_COMP_DB,
   AUDIO_SOURCE_OPTIONS,
   BLACK_SEMITONES,
   CLIP_DEFAULT_LENGTH_BEATS,
   CLIP_SNAP_BEATS,
   CLIP_CLASS_BY_TYPE,
   DEFAULT_TRACK_SETTINGS,
+  DRUM_OUTPUT_COMP_DB,
   DRUM_KIT_OPTIONS,
   GRID_COL_WIDTH,
   GRID_ROW_HEIGHT,
   GRID_TOTAL_ROWS,
+  INSTRUMENT_OUTPUT_COMP_DB,
   INSTRUMENT_PRESET_OPTIONS,
   MIDI_HIGH,
   MIDI_LOW,
   NOTE_NAMES,
   PIANO_STEPS_PER_BEAT,
+  TIMELINE_BEATS_PER_BAR,
   TIMELINE_TOTAL_BEATS,
   TRACK_TYPE_LABEL,
   TRACK_TYPE_OPTIONS,
@@ -46,6 +50,15 @@ type PlaybackNoteEvent = {
   drumKitId: Track['drumKitId'];
   audioSourceId: AudioSourceId;
   effectiveVolumeDb: number;
+};
+
+type CopiedMidiTrack = {
+  type: Extract<TrackType, 'Instrument' | 'Drums'>;
+  clips: Clip[];
+  instrumentPresetId: Track['instrumentPresetId'];
+  drumKitId: Track['drumKitId'];
+  volumeDb: number;
+  outputBusId: number | null;
 };
 
 export function MainEditor() {
@@ -78,6 +91,12 @@ export function MainEditor() {
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [playheadBeat, setPlayheadBeat] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [copiedMidiTrack, setCopiedMidiTrack] = useState<CopiedMidiTrack | null>(null);
+  const [isLoopPlaybackOn, setIsLoopPlaybackOn] = useState(false);
+  const [loopRange, setLoopRange] = useState<{ startBeat: number; endBeat: number }>({
+    startBeat: 0,
+    endBeat: TIMELINE_BEATS_PER_BAR * 4,
+  });
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   const pianoKeysRef = useRef<HTMLDivElement | null>(null);
@@ -102,8 +121,9 @@ export function MainEditor() {
 
   const projectName = searchParams.get('projectName') ?? 'SESSION_2023_X4';
   const bpmRaw = Number.parseFloat(searchParams.get('bpm') ?? '128');
-  const safeBpm = Number.isFinite(bpmRaw) && bpmRaw > 0 ? bpmRaw : 128;
-  const bpmLabel = safeBpm.toFixed(2);
+  const initialBpm = Number.isFinite(bpmRaw) && bpmRaw > 0 ? bpmRaw : 128;
+  const [bpm, setBpm] = useState(initialBpm);
+  const bpmLabel = bpm.toFixed(2);
 
   const pianoRows = Array.from({ length: GRID_TOTAL_ROWS }, (_, row) => {
     const midi = MIDI_HIGH - row;
@@ -124,7 +144,7 @@ export function MainEditor() {
   const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
   const toGainFillPercent = (db: number) => ((clamp(db, -24, 12) + 24) / 36) * 100;
   const formatTimecode = (beat: number) => {
-    const totalSeconds = (Math.max(0, beat) * 60) / safeBpm;
+    const totalSeconds = (Math.max(0, beat) * 60) / bpm;
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor(totalSeconds / 60) % 60;
     const seconds = Math.floor(totalSeconds) % 60;
@@ -162,6 +182,34 @@ export function MainEditor() {
   const getEffectiveTrackVolumeDb = (track: Track) => {
     const busTrack = getAssignedBusTrack(track);
     return clamp(track.volumeDb + (busTrack?.busGainDb ?? 0), -36, 12);
+  };
+
+  const getTrackOutputCompDb = (track: Track) => {
+    if (track.type === 'Instrument') {
+      return INSTRUMENT_OUTPUT_COMP_DB[track.instrumentPresetId];
+    }
+    if (track.type === 'Drums') {
+      return DRUM_OUTPUT_COMP_DB[track.drumKitId];
+    }
+    if (track.type === 'Audio') {
+      return AUDIO_OUTPUT_COMP_DB[track.audioSourceId];
+    }
+
+    return 0;
+  };
+
+  const getEventOutputCompDb = (event: PlaybackNoteEvent) => {
+    if (event.trackType === 'Instrument') {
+      return INSTRUMENT_OUTPUT_COMP_DB[event.instrumentPresetId];
+    }
+    if (event.trackType === 'Drums') {
+      return DRUM_OUTPUT_COMP_DB[event.drumKitId];
+    }
+    if (event.trackType === 'Audio') {
+      return AUDIO_OUTPUT_COMP_DB[event.audioSourceId];
+    }
+
+    return 0;
   };
 
   const dbToVelocity = (db: number) => clamp(Tone.dbToGain(db), 0.03, 1);
@@ -443,19 +491,20 @@ export function MainEditor() {
   const triggerAudioClip = (
     sourceId: AudioSourceId,
     durationSeconds: number,
-    effectiveVolumeDb: number,
+    compensatedVolumeDb: number,
   ) => {
     const player = audioPlayersRef.current[sourceId];
     if (!player || !player.loaded) {
       return;
     }
 
-    player.volume.value = effectiveVolumeDb;
+    player.volume.value = compensatedVolumeDb;
     player.start(undefined, 0, Math.max(0.1, durationSeconds));
   };
 
   const triggerPlaybackEvent = (event: PlaybackNoteEvent) => {
-    const velocity = dbToVelocity(event.effectiveVolumeDb);
+    const compensatedDb = event.effectiveVolumeDb + getEventOutputCompDb(event);
+    const velocity = dbToVelocity(compensatedDb);
 
     if (event.trackType === 'Instrument' && event.pitch !== null) {
       triggerInstrumentNote(event.instrumentPresetId, event.pitch, event.durationSeconds, velocity);
@@ -468,7 +517,7 @@ export function MainEditor() {
     }
 
     if (event.trackType === 'Audio') {
-      triggerAudioClip(event.audioSourceId, event.durationSeconds, event.effectiveVolumeDb);
+      triggerAudioClip(event.audioSourceId, event.durationSeconds, compensatedDb);
     }
   };
 
@@ -490,7 +539,7 @@ export function MainEditor() {
   };
 
   const buildPlaybackEvents = (): PlaybackNoteEvent[] => {
-    const beatSeconds = 60 / safeBpm;
+    const beatSeconds = 60 / bpm;
     const events: PlaybackNoteEvent[] = [];
 
     tracks.forEach((track) => {
@@ -551,6 +600,10 @@ export function MainEditor() {
       return;
     }
 
+    const minLoopLength = 1 / PIANO_STEPS_PER_BEAT;
+    const loopStartBeat = clamp(loopRange.startBeat, 0, TIMELINE_TOTAL_BEATS - minLoopLength);
+    const loopEndBeat = clamp(loopRange.endBeat, loopStartBeat + minLoopLength, TIMELINE_TOTAL_BEATS);
+    const playbackEndBeat = isLoopPlaybackOn ? loopEndBeat : TIMELINE_TOTAL_BEATS;
     const currentBeat = getCurrentSessionBeat();
     setPlayheadBeat(currentBeat);
 
@@ -560,17 +613,32 @@ export function MainEditor() {
       session.nextEventIndex += 1;
     }
 
-    if (currentBeat >= TIMELINE_TOTAL_BEATS) {
+    if (isLoopPlaybackOn && currentBeat >= playbackEndBeat) {
+      const nextEventIndex = session.events.findIndex((event) => event.startBeat >= loopStartBeat - 0.0001);
+      playbackSessionRef.current = {
+        ...session,
+        startWallTime: performance.now(),
+        startBeat: loopStartBeat,
+        nextEventIndex: nextEventIndex === -1 ? session.events.length : nextEventIndex,
+      };
+      setPlayheadBeat(loopStartBeat);
+      return;
+    }
+
+    if (currentBeat >= playbackEndBeat) {
       setIsPlaying(false);
       playbackSessionRef.current = null;
       cancelPlaybackTimer();
-      setPlayheadBeat(TIMELINE_TOTAL_BEATS);
+      setPlayheadBeat(playbackEndBeat);
       return;
     }
   };
 
   const startPlayback = async (startBeat: number) => {
-    const start = clamp(startBeat, 0, TIMELINE_TOTAL_BEATS);
+    const minLoopLength = 1 / PIANO_STEPS_PER_BEAT;
+    const loopStartBeat = clamp(loopRange.startBeat, 0, TIMELINE_TOTAL_BEATS - minLoopLength);
+    const loopEndBeat = clamp(loopRange.endBeat, loopStartBeat + minLoopLength, TIMELINE_TOTAL_BEATS);
+    const start = clamp(startBeat, isLoopPlaybackOn ? loopStartBeat : 0, isLoopPlaybackOn ? loopEndBeat : TIMELINE_TOTAL_BEATS);
     setPlayheadBeat(start);
     setIsPlaying(true);
 
@@ -588,7 +656,7 @@ export function MainEditor() {
       startWallTime: performance.now(),
       startBeat: start,
       nextEventIndex: nextEventIndex === -1 ? events.length : nextEventIndex,
-      bpm: safeBpm,
+      bpm,
       events,
     };
 
@@ -628,10 +696,136 @@ export function MainEditor() {
     setPlayheadBeat(0);
   };
 
+  const handleSeekBeat = (targetBeat: number) => {
+    const target = clamp(targetBeat, 0, TIMELINE_TOTAL_BEATS);
+    if (!isPlaying) {
+      setPlayheadBeat(target);
+      return;
+    }
+
+    void (async () => {
+      pausePlayback();
+      await startPlayback(target);
+    })();
+  };
+
+  const handleBpmChange = (rawValue: string) => {
+    const parsed = Number.parseFloat(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    const nextBpm = clamp(parsed, 40, 240);
+    setBpm(nextBpm);
+
+    if (isPlaying) {
+      const currentBeat = getCurrentSessionBeat();
+      void (async () => {
+        pausePlayback();
+        await startPlayback(currentBeat);
+      })();
+    }
+  };
+
+  const nudgeBpm = (delta: number) => {
+    handleBpmChange(String(clamp(bpm + delta, 40, 240)));
+  };
+
+  const handleLoopToggle = () => {
+    setIsLoopPlaybackOn((prev) => !prev);
+  };
+
+  const handleLoopRangeChange = (part: 'start' | 'end', rawValue: string) => {
+    const parsed = Number.parseFloat(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    setLoopRange((current) => {
+      const minLen = 1 / PIANO_STEPS_PER_BEAT;
+      if (part === 'start') {
+        const nextStart = clamp(parsed, 0, TIMELINE_TOTAL_BEATS - minLen);
+        return {
+          startBeat: nextStart,
+          endBeat: clamp(current.endBeat, nextStart + minLen, TIMELINE_TOTAL_BEATS),
+        };
+      }
+
+      const nextEnd = clamp(parsed, current.startBeat + minLen, TIMELINE_TOTAL_BEATS);
+      return {
+        startBeat: current.startBeat,
+        endBeat: nextEnd,
+      };
+    });
+  };
+
+  const deepCloneClip = (clip: Clip, seed: number, clipIndex: number): Clip => {
+    return {
+      ...clip,
+      id: seed + clipIndex * 1000 + 1,
+      notes: clip.notes.map((note, noteIndex) => ({
+        ...note,
+        id: seed + clipIndex * 1000 + noteIndex + 2,
+      })),
+    };
+  };
+
+  const handleCopySelectedMidiTrack = () => {
+    if (!selectedTrack || !canUsePianoRoll(selectedTrack)) {
+      return;
+    }
+
+    const midiType: CopiedMidiTrack['type'] = selectedTrack.type === 'Instrument' ? 'Instrument' : 'Drums';
+
+    setCopiedMidiTrack({
+      type: midiType,
+      clips: selectedTrack.clips.map((clip) => ({
+        ...clip,
+        notes: clip.notes.map((note) => ({ ...note })),
+      })),
+      instrumentPresetId: selectedTrack.instrumentPresetId,
+      drumKitId: selectedTrack.drumKitId,
+      volumeDb: selectedTrack.volumeDb,
+      outputBusId: selectedTrack.outputBusId,
+    });
+  };
+
+  const handlePasteMidiTrack = () => {
+    if (!copiedMidiTrack) {
+      return;
+    }
+
+    const option = TRACK_TYPE_OPTIONS.find((item) => item.id === copiedMidiTrack.type);
+    if (!option) {
+      return;
+    }
+
+    const nextIndex = tracks.length + 1;
+    const seed = Date.now() + nextIndex * 10000;
+    const routedBusExists = copiedMidiTrack.outputBusId !== null && busTracks.some((bus) => bus.id === copiedMidiTrack.outputBusId);
+    const createdTrack: Track = {
+      id: seed,
+      type: copiedMidiTrack.type,
+      name: `${String(nextIndex).padStart(2, '0')} ${copiedMidiTrack.type.toUpperCase()} TRACK`,
+      icon: option.icon,
+      clipClass: CLIP_CLASS_BY_TYPE[copiedMidiTrack.type] ?? 'bg-primary/10 border-primary/20',
+      clips: copiedMidiTrack.clips.map((clip, clipIndex) => deepCloneClip(clip, seed, clipIndex)),
+      ...DEFAULT_TRACK_SETTINGS,
+      instrumentPresetId: copiedMidiTrack.instrumentPresetId,
+      drumKitId: copiedMidiTrack.drumKitId,
+      volumeDb: copiedMidiTrack.volumeDb,
+      outputBusId: routedBusExists ? copiedMidiTrack.outputBusId : null,
+    };
+
+    setTracks((prev) => [...prev, createdTrack]);
+    setSelectedTrackId(createdTrack.id);
+  };
+
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
     try {
       await ensureToneReady();
-      const velocity = dbToVelocity(getEffectiveTrackVolumeDb(track));
+      const compensatedDb = getEffectiveTrackVolumeDb(track) + getTrackOutputCompDb(track);
+      const velocity = dbToVelocity(compensatedDb);
 
       if (track.type === 'Instrument') {
         if (track.instrumentPresetId === 'piano') {
@@ -656,7 +850,7 @@ export function MainEditor() {
 
       if (track.type === 'Audio') {
         const player = await ensureAudioPlayer(track.audioSourceId);
-        player.volume.value = getEffectiveTrackVolumeDb(track);
+        player.volume.value = compensatedDb;
         player.start(undefined, 0, Math.max(0.1, durationSeconds));
       }
     } catch {
@@ -688,6 +882,35 @@ export function MainEditor() {
       audioPlayersRef.current = {};
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName.toLowerCase();
+      if (tagName === 'input' || tagName === 'select' || tagName === 'textarea' || target?.isContentEditable) {
+        return;
+      }
+
+      const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
+      const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
+
+      if (isCopy && selectedTrack && canUsePianoRoll(selectedTrack)) {
+        event.preventDefault();
+        handleCopySelectedMidiTrack();
+        return;
+      }
+
+      if (isPaste && copiedMidiTrack) {
+        event.preventDefault();
+        handlePasteMidiTrack();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedTrack, copiedMidiTrack, tracks, busTracks, handleCopySelectedMidiTrack, handlePasteMidiTrack]);
 
   const updateActiveClipNotes = (updater: (notes: Note[]) => Note[]) => {
     if (activePianoTrackId === null || activePianoClipId === null) {
@@ -1374,12 +1597,31 @@ export function MainEditor() {
             >
               <span className="material-symbols-outlined">stop</span>
             </button>
+            <button
+              onClick={handleLoopToggle}
+              className={`transition-colors ${isLoopPlaybackOn ? 'text-[#66d0ff]' : 'text-on-surface-variant hover:text-[#66d0ff]'}`}
+              title="Loop Playback"
+            >
+              <span className="material-symbols-outlined">repeat</span>
+            </button>
             <button className="text-error active:scale-95"><span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>fiber_manual_record</span></button>
           </div>
           <div className="flex gap-6 font-mono text-[13px] text-primary">
             <div className="flex flex-col items-center">
               <span className="text-[9px] text-on-surface-variant uppercase font-bold tracking-tighter">BPM</span>
-              <span>{bpmLabel}</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => nudgeBpm(-1)} className="text-zinc-500 hover:text-primary text-[11px]">-</button>
+                <input
+                  type="number"
+                  min={40}
+                  max={240}
+                  step={1}
+                  value={Number.isFinite(bpm) ? bpm : 128}
+                  onChange={(event) => handleBpmChange(event.target.value)}
+                  className="w-16 text-center bg-transparent border border-outline-variant/20 text-primary text-[12px] leading-none py-[1px]"
+                />
+                <button onClick={() => nudgeBpm(1)} className="text-zinc-500 hover:text-primary text-[11px]">+</button>
+              </div>
             </div>
             <div className="flex flex-col items-center border-x border-outline-variant/20 px-6">
               <span className="text-[9px] text-on-surface-variant uppercase font-bold tracking-tighter">Position</span>
@@ -1549,11 +1791,54 @@ export function MainEditor() {
             {selectedTrack.type !== 'Bus' && (
               <button
                 onClick={handlePreviewSelectedTrack}
-                className="ml-auto h-10 px-5 bg-[#181818] hover:bg-[#202020] text-primary text-[11px] font-bold uppercase tracking-widest border border-primary/30 transition-colors"
+                className="h-10 px-4 bg-[#181818] hover:bg-[#202020] text-primary text-[11px] font-bold uppercase tracking-widest border border-primary/30 transition-colors"
               >
                 Preview
               </button>
             )}
+
+            <button
+              onClick={handleCopySelectedMidiTrack}
+              disabled={!selectedTrack || !canUsePianoRoll(selectedTrack)}
+              className="h-10 px-4 bg-[#181818] hover:bg-[#202020] disabled:opacity-35 disabled:cursor-not-allowed text-zinc-300 text-[10px] font-bold uppercase tracking-widest border border-zinc-600/40 transition-colors"
+            >
+              Copy MIDI
+            </button>
+            <button
+              onClick={handlePasteMidiTrack}
+              disabled={!copiedMidiTrack}
+              className="h-10 px-4 bg-[#181818] hover:bg-[#202020] disabled:opacity-35 disabled:cursor-not-allowed text-zinc-300 text-[10px] font-bold uppercase tracking-widest border border-zinc-600/40 transition-colors"
+            >
+              Paste MIDI
+            </button>
+
+            <div className="ml-auto editor-control-card w-[250px]">
+              <span className="editor-control-label">Loop Range</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={TIMELINE_TOTAL_BEATS}
+                  step={1}
+                  value={Math.round(loopRange.startBeat)}
+                  onChange={(event) => handleLoopRangeChange('start', event.target.value)}
+                  className="editor-mini-input"
+                />
+                <span className="text-zinc-500 text-[10px]">to</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={TIMELINE_TOTAL_BEATS}
+                  step={1}
+                  value={Math.round(loopRange.endBeat)}
+                  onChange={(event) => handleLoopRangeChange('end', event.target.value)}
+                  className="editor-mini-input"
+                />
+                <span className={`editor-loop-badge ${isLoopPlaybackOn ? 'editor-loop-badge-on' : ''}`}>
+                  {isLoopPlaybackOn ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
           </div>
         ) : (
           <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Select a track to edit sound and routing</span>
@@ -1596,6 +1881,7 @@ export function MainEditor() {
           selectedTrackId={selectedTrackId}
           selectedTrackName={selectedTrack?.name ?? null}
           playheadBeat={playheadBeat}
+          onSeekBeat={handleSeekBeat}
           onOpenAddTrack={() => setIsAddTrackModalOpen(true)}
           onTrackClick={handleTrackClick}
           onTrackDoubleClick={handleTrackDoubleClick}

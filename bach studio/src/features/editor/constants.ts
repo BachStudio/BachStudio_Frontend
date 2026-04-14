@@ -78,6 +78,25 @@ export const AUDIO_SOURCE_OPTIONS: AudioSourceOption[] = [
   },
 ];
 
+export const INSTRUMENT_OUTPUT_COMP_DB = {
+  piano: -2,
+  analog: -10,
+  organ: -8,
+  bass: -6,
+} as const;
+
+export const DRUM_OUTPUT_COMP_DB = {
+  acoustic: -9,
+  electro: -11,
+  trap808: -12,
+} as const;
+
+export const AUDIO_OUTPUT_COMP_DB = {
+  vocal_chop: -8,
+  guitar_hit: -10,
+  fx_riser: -14,
+} as const;
+
 export const TRACK_TYPE_LABEL: Record<TrackType, string> = {
   Instrument: 'Instrument',
   Drums: 'Drums',
