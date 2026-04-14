@@ -63,7 +63,6 @@ type CopiedMidiTrack = {
 
 export function MainEditor() {
   const [searchParams] = useSearchParams();
-  const [isAICoreVisible, setIsAICoreVisible] = useState(false);
   const [isAddTrackModalOpen, setIsAddTrackModalOpen] = useState(false);
   const [isPianoRollOpen, setIsPianoRollOpen] = useState(false);
   const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
@@ -1624,13 +1623,6 @@ export function MainEditor() {
         </div>
 
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => setIsAICoreVisible((prev) => !prev)}
-            className={`hover:bg-[#2c2c2c] transition-colors p-1 ${isAICoreVisible ? 'text-primary' : 'text-zinc-500'}`}
-            title="Toggle AI Core"
-          >
-            <span className="material-symbols-outlined" style={{ fontVariationSettings: isAICoreVisible ? "'FILL' 1" : "'FILL' 0" }}>bolt</span>
-          </button>
           <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">help</span></button>
           <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">settings</span></button>
           <button className="bg-primary text-on-primary px-4 py-1 font-mono text-[11px] font-bold uppercase tracking-widest active:bg-white transition-all">Export</button>
@@ -1854,55 +1846,6 @@ export function MainEditor() {
           onClipDoubleClick={handleClipDoubleClick}
           onClipResizeMouseDown={handleClipResizeMouseDown}
         />
-
-        {isAICoreVisible && (
-          <aside className="w-72 bg-surface-container-low flex flex-col p-4 gap-6">
-            <div className="flex items-center justify-between border-b border-primary/20 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>bolt</span>
-                <span className="text-[12px] font-black uppercase tracking-widest text-primary">AI Core</span>
-              </div>
-              <span className="text-[9px] font-mono text-zinc-500">v2.4 Engine</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-surface-container p-3 flex flex-col">
-                <span className="text-[8px] font-bold text-zinc-500 uppercase mb-1">Inference</span>
-                <span className="text-xs font-mono text-primary">0ms</span>
-              </div>
-              <div className="bg-surface-container p-3 flex flex-col">
-                <span className="text-[8px] font-bold text-zinc-500 uppercase mb-1">Confidence</span>
-                <span className="text-xs font-mono text-primary">0%</span>
-              </div>
-            </div>
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-bold uppercase tracking-tight text-on-surface-variant">Mumble Sensitivity</label>
-                  <span className="text-[10px] font-mono text-primary">74%</span>
-                </div>
-                <div className="h-1 bg-surface-container-highest relative">
-                  <div className="absolute top-0 left-0 h-full w-[74%] bg-primary"></div>
-                  <div className="absolute top-1/2 -translate-y-1/2 left-[74%] w-3 h-3 bg-white -ml-1.5 cursor-pointer"></div>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-bold uppercase tracking-tight text-on-surface-variant">Quantize Amount</label>
-                  <span className="text-[10px] font-mono text-primary">0.5s</span>
-                </div>
-                <div className="h-1 bg-surface-container-highest relative">
-                  <div className="absolute top-0 left-0 h-full w-[40%] bg-primary"></div>
-                  <div className="absolute top-1/2 -translate-y-1/2 left-[40%] w-3 h-3 bg-white -ml-1.5 cursor-pointer"></div>
-                </div>
-              </div>
-            </div>
-            <div className="mt-auto">
-              <button className="w-full bg-surface-container-highest text-zinc-500 font-bold uppercase py-3 text-[11px] tracking-widest transition-all" disabled>
-                Generate Pattern
-              </button>
-            </div>
-          </aside>
-        )}
       </main>
 
       <footer className="w-full flex justify-between items-center px-4 bg-[#0e0e0e] h-6 border-t border-[#484847]/20 z-50">
