@@ -13,6 +13,7 @@ import type { Clip, Track } from './types';
 type TimelinePanelProps = {
   tracks: Track[];
   selectedTrackId: number | null;
+  selectedTimelineClip: { trackId: number; clipId: number } | null;
   selectedTrackName: string | null;
   playheadBeat: number;
   isLoopPlaybackOn: boolean;
@@ -38,6 +39,7 @@ type LoopDragState = {
 export function TimelinePanel({
   tracks,
   selectedTrackId,
+  selectedTimelineClip,
   selectedTrackName,
   playheadBeat,
   isLoopPlaybackOn,
@@ -331,14 +333,15 @@ export function TimelinePanel({
                 <div
                   key={clip.id}
                   data-clip="1"
+                  onClick={(event) => event.stopPropagation()}
                   onMouseDown={(event) => onClipMouseDown(event, track.id, clip)}
                   onDoubleClick={(event) => onClipDoubleClick(event, track.id, clip.id)}
-                  className={`absolute top-3 bottom-3 border ${track.clipClass} backdrop-blur-[1px] overflow-hidden rounded-[2px] cursor-grab active:cursor-grabbing`}
+                  className={`absolute top-3 bottom-3 border ${track.clipClass} backdrop-blur-[1px] overflow-hidden rounded-[2px] cursor-grab active:cursor-grabbing transition-[box-shadow,border-color] ${selectedTimelineClip?.trackId === track.id && selectedTimelineClip.clipId === clip.id ? 'ring-2 ring-primary/80 border-primary/90 z-10' : ''}`}
                   style={{
                     left: `${(clip.start / TIMELINE_TOTAL_BEATS) * 100}%`,
                     width: `${Math.max((clip.length / TIMELINE_TOTAL_BEATS) * 100, 1.4)}%`,
                   }}
-                  title="Drag to move. Double click to edit in piano roll."
+                  title="Drag to move. Double click to edit in piano roll. Press Del to delete selected MIDI clip."
                 >
                   <div className="absolute inset-0 pointer-events-none">
                     {Array.from({ length: Math.max(clip.length - 1, 0) }, (_, beatIndex) => {

@@ -52,13 +52,13 @@ type PlaybackNoteEvent = {
   effectiveVolumeDb: number;
 };
 
-type CopiedMidiTrack = {
-  type: Extract<TrackType, 'Instrument' | 'Drums'>;
+type CopiedMidiChunk = {
   clips: Clip[];
-  instrumentPresetId: Track['instrumentPresetId'];
-  drumKitId: Track['drumKitId'];
-  volumeDb: number;
-  outputBusId: number | null;
+};
+
+type SelectedTimelineClip = {
+  trackId: number;
+  clipId: number;
 };
 
 export function MainEditor() {
@@ -90,7 +90,8 @@ export function MainEditor() {
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [playheadBeat, setPlayheadBeat] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [copiedMidiTrack, setCopiedMidiTrack] = useState<CopiedMidiTrack | null>(null);
+  const [copiedMidiChunk, setCopiedMidiChunk] = useState<CopiedMidiChunk | null>(null);
+  const [selectedTimelineClip, setSelectedTimelineClip] = useState<SelectedTimelineClip | null>(null);
   const [isLoopPlaybackOn, setIsLoopPlaybackOn] = useState(false);
   const [loopRange, setLoopRange] = useState<{ startBeat: number; endBeat: number }>({
     startBeat: 0,
@@ -747,9 +748,10 @@ export function MainEditor() {
     });
   };
 
-  const deepCloneClip = (clip: Clip, seed: number, clipIndex: number): Clip => {
+  const deepCloneClip = (clip: Clip, seed: number, clipIndex: number, startBeat = clip.start): Clip => {
     return {
       ...clip,
+      start: startBeat,
       id: seed + clipIndex * 1000 + 1,
       notes: clip.notes.map((note, noteIndex) => ({
         ...note,
@@ -763,50 +765,90 @@ export function MainEditor() {
       return;
     }
 
-    const midiType: CopiedMidiTrack['type'] = selectedTrack.type === 'Instrument' ? 'Instrument' : 'Drums';
-
-    setCopiedMidiTrack({
-      type: midiType,
+    setCopiedMidiChunk({
       clips: selectedTrack.clips.map((clip) => ({
         ...clip,
         notes: clip.notes.map((note) => ({ ...note })),
       })),
-      instrumentPresetId: selectedTrack.instrumentPresetId,
-      drumKitId: selectedTrack.drumKitId,
-      volumeDb: selectedTrack.volumeDb,
-      outputBusId: selectedTrack.outputBusId,
     });
   };
 
   const handlePasteMidiTrack = () => {
-    if (!copiedMidiTrack) {
+    if (!copiedMidiChunk || copiedMidiChunk.clips.length === 0) {
       return;
     }
 
-    const option = TRACK_TYPE_OPTIONS.find((item) => item.id === copiedMidiTrack.type);
-    if (!option) {
+    if (!selectedTrack || !canUsePianoRoll(selectedTrack)) {
       return;
     }
 
-    const nextIndex = tracks.length + 1;
-    const seed = Date.now() + nextIndex * 10000;
-    const routedBusExists = copiedMidiTrack.outputBusId !== null && busTracks.some((bus) => bus.id === copiedMidiTrack.outputBusId);
-    const createdTrack: Track = {
-      id: seed,
-      type: copiedMidiTrack.type,
-      name: `${String(nextIndex).padStart(2, '0')} ${copiedMidiTrack.type.toUpperCase()} TRACK`,
-      icon: option.icon,
-      clipClass: CLIP_CLASS_BY_TYPE[copiedMidiTrack.type] ?? 'bg-primary/10 border-primary/20',
-      clips: copiedMidiTrack.clips.map((clip, clipIndex) => deepCloneClip(clip, seed, clipIndex)),
-      ...DEFAULT_TRACK_SETTINGS,
-      instrumentPresetId: copiedMidiTrack.instrumentPresetId,
-      drumKitId: copiedMidiTrack.drumKitId,
-      volumeDb: copiedMidiTrack.volumeDb,
-      outputBusId: routedBusExists ? copiedMidiTrack.outputBusId : null,
-    };
+    const copiedStartBeat = copiedMidiChunk.clips.reduce((min, clip) => Math.min(min, clip.start), Number.POSITIVE_INFINITY);
+    const copiedEndBeat = copiedMidiChunk.clips.reduce((max, clip) => Math.max(max, clip.start + clip.length), Number.NEGATIVE_INFINITY);
+    const copiedLengthBeat = Math.max(CLIP_SNAP_BEATS, copiedEndBeat - copiedStartBeat);
+    const snappedPlayheadBeat = clamp(
+      Math.round(playheadBeat / CLIP_SNAP_BEATS) * CLIP_SNAP_BEATS,
+      0,
+      TIMELINE_TOTAL_BEATS,
+    );
+    const anchorStartBeat = clamp(
+      snappedPlayheadBeat,
+      0,
+      Math.max(TIMELINE_TOTAL_BEATS - copiedLengthBeat, 0),
+    );
+    const seed = Date.now() + Math.floor(Math.random() * 1000);
 
-    setTracks((prev) => [...prev, createdTrack]);
-    setSelectedTrackId(createdTrack.id);
+    updateTrackClips(selectedTrack.id, (clips) => {
+      const pastedClips = copiedMidiChunk.clips.map((clip, clipIndex) => {
+        const relativeStartBeat = clip.start - copiedStartBeat;
+        const nextStartBeat = anchorStartBeat + relativeStartBeat;
+        return deepCloneClip(clip, seed, clipIndex, nextStartBeat);
+      });
+
+      return [...clips, ...pastedClips].sort((left, right) => left.start - right.start || left.id - right.id);
+    });
+
+    setSelectedTimelineClip({
+      trackId: selectedTrack.id,
+      clipId: seed + 1,
+    });
+  };
+
+  const handleDeleteSelectedMidiClip = () => {
+    if (!selectedTimelineClip) {
+      return;
+    }
+
+    const targetTrack = tracks.find((track) => track.id === selectedTimelineClip.trackId) ?? null;
+    if (!targetTrack || !canUsePianoRoll(targetTrack)) {
+      return;
+    }
+
+    const targetClip = targetTrack.clips.find((clip) => clip.id === selectedTimelineClip.clipId);
+    if (!targetClip) {
+      setSelectedTimelineClip(null);
+      return;
+    }
+
+    const remainingClips = targetTrack.clips.filter((clip) => clip.id !== selectedTimelineClip.clipId);
+    updateTrackClips(selectedTimelineClip.trackId, (clips) =>
+      clips.filter((clip) => clip.id !== selectedTimelineClip.clipId),
+    );
+
+    if (activePianoTrackId === selectedTimelineClip.trackId && activePianoClipId === selectedTimelineClip.clipId) {
+      if (remainingClips.length > 0) {
+        setActivePianoClipId(remainingClips[0].id);
+      } else {
+        setIsPianoRollOpen(false);
+        setActivePianoTrackId(null);
+        setActivePianoClipId(null);
+      }
+
+      setSelectedNoteIds([]);
+      setSelectionBox(null);
+      setDragState(null);
+    }
+
+    setSelectedTimelineClip(null);
   };
 
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
@@ -881,6 +923,13 @@ export function MainEditor() {
 
       const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
       const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
+      const isDelete = event.key === 'Delete' || event.key === 'Backspace';
+
+      if (isDelete && selectedTimelineClip) {
+        event.preventDefault();
+        handleDeleteSelectedMidiClip();
+        return;
+      }
 
       if (isCopy && selectedTrack && canUsePianoRoll(selectedTrack)) {
         event.preventDefault();
@@ -888,7 +937,7 @@ export function MainEditor() {
         return;
       }
 
-      if (isPaste && copiedMidiTrack) {
+      if (isPaste && copiedMidiChunk && selectedTrack && canUsePianoRoll(selectedTrack)) {
         event.preventDefault();
         handlePasteMidiTrack();
       }
@@ -898,7 +947,16 @@ export function MainEditor() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [selectedTrack, copiedMidiTrack, tracks, busTracks, handleCopySelectedMidiTrack, handlePasteMidiTrack]);
+  }, [
+    selectedTrack,
+    copiedMidiChunk,
+    selectedTimelineClip,
+    tracks,
+    busTracks,
+    handleCopySelectedMidiTrack,
+    handlePasteMidiTrack,
+    handleDeleteSelectedMidiClip,
+  ]);
 
   const updateActiveClipNotes = (updater: (notes: Note[]) => Note[]) => {
     if (activePianoTrackId === null || activePianoClipId === null) {
@@ -986,6 +1044,7 @@ export function MainEditor() {
 
   const handleTrackClick = (trackId: number) => {
     setSelectedTrackId(trackId);
+    setSelectedTimelineClip(null);
   };
 
   const handleSelectedTrackInstrumentChange = (presetId: Track['instrumentPresetId']) => {
@@ -1115,15 +1174,18 @@ export function MainEditor() {
       };
 
       updateTrackClips(trackId, (clips) => [...clips, createdClip]);
+      setSelectedTimelineClip({ trackId, clipId: createdClip.id });
       openPianoRollForClip(trackId, createdClip.id);
       return;
     }
 
+    setSelectedTimelineClip({ trackId, clipId: targetTrack.clips[0].id });
     openPianoRollForClip(trackId, targetTrack.clips[0].id);
   };
 
   const handleTrackLaneDoubleClick = (event: ReactMouseEvent<HTMLDivElement>, trackId: number) => {
     setSelectedTrackId(trackId);
+    setSelectedTimelineClip(null);
     if (event.button !== 0) {
       return;
     }
@@ -1152,15 +1214,17 @@ export function MainEditor() {
       Math.min(CLIP_DEFAULT_LENGTH_BEATS, TIMELINE_TOTAL_BEATS - snappedStart),
     );
 
+    const createdClipId = Date.now() + snappedStart;
     updateTrackClips(trackId, (clips) => [
       ...clips,
       {
-        id: Date.now() + snappedStart,
+        id: createdClipId,
         start: snappedStart,
         length: clippedLength,
         notes: [],
       },
     ]);
+    setSelectedTimelineClip({ trackId, clipId: createdClipId });
   };
 
   const handleClipMouseDown = (
@@ -1185,6 +1249,7 @@ export function MainEditor() {
 
     const laneRect = lane.getBoundingClientRect();
     setSelectedTrackId(trackId);
+    setSelectedTimelineClip({ trackId, clipId: clip.id });
     setClipDragState({
       trackId,
       clipId: clip.id,
@@ -1209,6 +1274,7 @@ export function MainEditor() {
       return;
     }
 
+    setSelectedTimelineClip({ trackId, clipId });
     openPianoRollForClip(trackId, clipId);
   };
 
@@ -1229,6 +1295,7 @@ export function MainEditor() {
 
     const laneRect = lane.getBoundingClientRect();
     setSelectedTrackId(trackId);
+    setSelectedTimelineClip({ trackId, clipId: clip.id });
     setClipResizeState({
       trackId,
       clipId: clip.id,
@@ -1787,7 +1854,7 @@ export function MainEditor() {
             </button>
             <button
               onClick={handlePasteMidiTrack}
-              disabled={!copiedMidiTrack}
+              disabled={!copiedMidiChunk || !selectedTrack || !canUsePianoRoll(selectedTrack)}
               className="h-10 px-4 bg-[#181818] hover:bg-[#202020] disabled:opacity-35 disabled:cursor-not-allowed text-zinc-300 text-[10px] font-bold uppercase tracking-widest border border-zinc-600/40 transition-colors"
             >
               Paste MIDI
@@ -1832,6 +1899,7 @@ export function MainEditor() {
         <TimelinePanel
           tracks={tracks}
           selectedTrackId={selectedTrackId}
+          selectedTimelineClip={selectedTimelineClip}
           selectedTrackName={selectedTrack?.name ?? null}
           playheadBeat={playheadBeat}
           isLoopPlaybackOn={isLoopPlaybackOn}
