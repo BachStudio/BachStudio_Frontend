@@ -8,14 +8,7 @@ export function LandingView({ onStartProject, onOpenProjectManager }: LandingVie
     <>
       <header className="bg-[#0e0e0e] text-[#f4ffc6] font-['Inter'] font-mono text-[11px] tracking-widest uppercase flex justify-between items-center w-full px-4 h-12 fixed top-0 z-50 border-b-0">
         <div className="flex items-center gap-8">
-          <span className="text-lg font-black tracking-tighter text-[#f4ffc6] uppercase">Bach Studio</span>
-          <nav className="hidden md:flex gap-6">
-            <a className="text-[#f4ffc6] border-b-2 border-[#f4ffc6] pb-1 hover:bg-[#2c2c2c] transition-colors" href="#">File</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Edit</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Track</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">Mix</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors" href="#">View</a>
-          </nav>
+          <span className="text-lg font-headline font-black tracking-tighter text-[#f4ffc6] uppercase">BACH STUDIO</span>
         </div>
         <div className="flex items-center gap-4">
           <button className="hover:bg-[#2c2c2c] transition-colors px-2 py-1 flex items-center">
@@ -54,9 +47,6 @@ export function LandingView({ onStartProject, onOpenProjectManager }: LandingVie
               <button onClick={onOpenProjectManager} className="ghost-border text-white hover:bg-surface-bright px-8 py-4 uppercase text-sm font-bold transition-colors flex items-center gap-3">
                 Project Manager
                 <span className="material-symbols-outlined text-sm">folder_open</span>
-              </button>
-              <button className="ghost-border text-white hover:bg-surface-bright px-8 py-4 uppercase text-sm font-bold transition-colors">
-                View Documentation
               </button>
             </div>
           </div>
@@ -126,15 +116,6 @@ export function LandingView({ onStartProject, onOpenProjectManager }: LandingVie
           </div>
         </section>
       </main>
-
-      <footer className="bg-[#0e0e0e] text-[#f4ffc6] font-mono text-[9px] uppercase tracking-tighter text-zinc-500 fixed bottom-0 w-full flex justify-between items-center px-4 h-6 border-t border-[#484847]/20 z-50">
-        <div>Bach Studio Engine v2.4 | CPU: 14% | RAM: 2.4GB</div>
-        <div className="flex gap-4">
-          <span className="hover:text-white cursor-default">Buffer: 128</span>
-          <span className="hover:text-white cursor-default">44.1kHz</span>
-          <span className="text-[#f4ffc6]">24-bit</span>
-        </div>
-      </footer>
     </>
   );
 }

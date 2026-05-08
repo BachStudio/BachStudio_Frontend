@@ -99,10 +99,13 @@ export function MainEditor() {
     startBeat: 0,
     endBeat: TIMELINE_BEATS_PER_BAR * 4,
   });
+  const [isModified, setIsModified] = useState(false);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   const pianoKeysRef = useRef<HTMLDivElement | null>(null);
   const isSyncingScrollRef = useRef(false);
+  const originalTracksRef = useRef<Track[]>([]);
+  const originalBpmRef = useRef<number>(128);
   const navigate = useNavigate();
   const samplerRef = useRef<Tone.Sampler | null>(null);
   const analogSynthRef = useRef<Tone.PolySynth | null>(null);
@@ -870,6 +873,14 @@ export function MainEditor() {
   };
 
   const handleLoadProject = () => {
+    if (isModified) {
+      const shouldSave = window.confirm(
+        '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
+      );
+      if (shouldSave) {
+        handleSaveProject();
+      }
+    }
     navigate('/projects');
   };
 
@@ -881,7 +892,49 @@ export function MainEditor() {
 
     setTracks(loadedProject.tracks);
     setBpm(loadedProject.bpm);
+    originalTracksRef.current = JSON.parse(JSON.stringify(loadedProject.tracks));
+    originalBpmRef.current = loadedProject.bpm;
+    setIsModified(false);
   }, [projectName]);
+
+  // 변경 감지: tracks나 bpm이 원본과 다르면 isModified = true
+  useEffect(() => {
+    const hasChanges =
+      JSON.stringify(tracks) !== JSON.stringify(originalTracksRef.current) ||
+      bpm !== originalBpmRef.current;
+    setIsModified(hasChanges);
+  }, [tracks, bpm]);
+
+  // 페이지 떠나기 전에 경고 (뒤로가기, 새 페이지로 이동)
+  useEffect(() => {
+    if (!isModified) return;
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    const handlePopState = () => {
+      if (
+        window.confirm(
+          '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
+        )
+      ) {
+        handleSaveProject();
+      } else {
+        // 사용자가 "아니오"를 선택해도 이미 navigate가 일어났으므로,
+        // 돌아가도록 forward를 누르거나 그냥 진행
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isModified, tracks, bpm]);
 
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
     try {
@@ -953,10 +1006,17 @@ export function MainEditor() {
         return;
       }
 
+      const isSpacebar = event.code === 'Space' || event.key === ' ';
       const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
       const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
       const isSave = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's';
       const isDelete = event.key === 'Delete' || event.key === 'Backspace';
+
+      if (isSpacebar) {
+        event.preventDefault();
+        handlePlayToggle();
+        return;
+      }
 
       if (isSave) {
         event.preventDefault();
@@ -998,6 +1058,7 @@ export function MainEditor() {
     handlePasteMidiTrack,
     handleDeleteSelectedMidiClip,
     handleSaveProject,
+    handlePlayToggle,
   ]);
 
   const updateActiveClipNotes = (updater: (notes: Note[]) => Note[]) => {
@@ -1922,37 +1983,7 @@ export function MainEditor() {
         )}
       </section>
 
-      <main className="flex flex-1 overflow-hidden bg-[#131313] gap-[2px]">
-        <aside className="bg-[#131313] flex flex-col items-center py-4 space-y-1 w-16 border-r-0">
-          <div className="mb-4">
-            <span className="font-['Inter'] text-[10px] font-bold uppercase text-zinc-600 tracking-tighter">TOOLS</span>
-          </div>
-          <button className="bg-[#20201f] text-[#f4ffc6] border-l-2 border-[#f4ffc6] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">near_me</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Select</span>
-          </button>
-          <button className="text-zinc-600 hover:bg-[#2c2c2c] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">content_cut</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Cut</span>
-          </button>
-          <button className="text-zinc-600 hover:bg-[#2c2c2c] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">edit</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Draw</span>
-          </button>
-          <button className="text-zinc-600 hover:bg-[#2c2c2c] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">volume_off</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Mute</span>
-          </button>
-          <button className="text-zinc-600 hover:bg-[#2c2c2c] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">search</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Zoom</span>
-          </button>
-          <button className="text-zinc-600 hover:bg-[#2c2c2c] w-full aspect-square flex flex-col items-center justify-center transition-all duration-75">
-            <span className="material-symbols-outlined">swap_horiz</span>
-            <span className="font-['Inter'] text-[8px] font-bold uppercase mt-1">Slip</span>
-          </button>
-        </aside>
-
+      <main className="flex flex-1 overflow-hidden bg-[#131313]">
         <TimelinePanel
           tracks={tracks}
           selectedTrackId={selectedTrackId}
@@ -1972,17 +2003,6 @@ export function MainEditor() {
           onClipResizeMouseDown={handleClipResizeMouseDown}
         />
       </main>
-
-      <footer className="w-full flex justify-between items-center px-4 bg-[#0e0e0e] h-6 border-t border-[#484847]/20 z-50">
-        <div className="flex items-center">
-          <span className="font-mono text-[9px] uppercase tracking-tighter text-zinc-500">Bach Studio Engine v2.4 | CPU: 14% | RAM: 2.4GB</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <a className="font-mono text-[9px] uppercase tracking-tighter text-zinc-600 hover:text-white" href="#">Buffer: 128</a>
-          <a className="font-mono text-[9px] uppercase tracking-tighter text-[#f4ffc6] hover:text-white" href="#">44.1kHz</a>
-          <a className="font-mono text-[9px] uppercase tracking-tighter text-zinc-600 hover:text-white" href="#">24-bit</a>
-        </div>
-      </footer>
 
       <PianoRollOverlay
         isOpen={isPianoRollOpen}
