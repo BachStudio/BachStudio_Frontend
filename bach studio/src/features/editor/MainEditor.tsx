@@ -3,6 +3,8 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as Tone from 'tone';
 import { AddTrackModal } from './AddTrackModal';
+import { ProjectBrowserModal } from './ProjectBrowserModal';
+import { saveProject, type ProjectData } from './fileUtils';
 import {
   AUDIO_OUTPUT_COMP_DB,
   AUDIO_SOURCE_OPTIONS,
@@ -93,6 +95,8 @@ export function MainEditor() {
   const [copiedMidiChunk, setCopiedMidiChunk] = useState<CopiedMidiChunk | null>(null);
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<SelectedTimelineClip | null>(null);
   const [isLoopPlaybackOn, setIsLoopPlaybackOn] = useState(false);
+  const [saveNotification, setSaveNotification] = useState<{ message: string; visible: boolean }>({ message: '', visible: false });
+  const [isProjectBrowserOpen, setIsProjectBrowserOpen] = useState(false);
   const [loopRange, setLoopRange] = useState<{ startBeat: number; endBeat: number }>({
     startBeat: 0,
     endBeat: TIMELINE_BEATS_PER_BAR * 4,
@@ -851,6 +855,34 @@ export function MainEditor() {
     setSelectedTimelineClip(null);
   };
 
+  const handleSaveProject = () => {
+    const success = saveProject(projectName, tracks, bpm);
+    if (success) {
+      setSaveNotification({ message: `Saved: ${projectName}`, visible: true });
+      setTimeout(() => {
+        setSaveNotification({ message: '', visible: false });
+      }, 2000);
+    } else {
+      setSaveNotification({ message: 'Save failed', visible: true });
+      setTimeout(() => {
+        setSaveNotification({ message: '', visible: false });
+      }, 2000);
+    }
+  };
+
+  const handleLoadProject = () => {
+    setIsProjectBrowserOpen(true);
+  };
+
+  const handleProjectSelect = (project: ProjectData) => {
+    setTracks(project.tracks);
+    setBpm(project.bpm);
+    setSaveNotification({ message: `Loaded: ${project.projectName}`, visible: true });
+    setTimeout(() => {
+      setSaveNotification({ message: '', visible: false });
+    }, 2000);
+  };
+
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
     try {
       await ensureToneReady();
@@ -923,7 +955,14 @@ export function MainEditor() {
 
       const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
       const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
+      const isSave = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's';
       const isDelete = event.key === 'Delete' || event.key === 'Backspace';
+
+      if (isSave) {
+        event.preventDefault();
+        handleSaveProject();
+        return;
+      }
 
       if (isDelete && selectedTimelineClip) {
         event.preventDefault();
@@ -953,9 +992,12 @@ export function MainEditor() {
     selectedTimelineClip,
     tracks,
     busTracks,
+    projectName,
+    bpm,
     handleCopySelectedMidiTrack,
     handlePasteMidiTrack,
     handleDeleteSelectedMidiClip,
+    handleSaveProject,
   ]);
 
   const updateActiveClipNotes = (updater: (notes: Note[]) => Note[]) => {
@@ -1630,6 +1672,21 @@ export function MainEditor() {
         <div className="flex items-center bg-surface-container-low px-4 py-1 gap-8 ghost-border">
           <div className="flex items-center gap-4">
             <button
+              onClick={handleSaveProject}
+              className="text-on-surface-variant hover:text-primary transition-colors"
+              title="Save project (Ctrl+S)"
+            >
+              <span className="material-symbols-outlined">save</span>
+            </button>
+            <button
+              onClick={handleLoadProject}
+              className="text-on-surface-variant hover:text-primary transition-colors"
+              title="Load project"
+            >
+              <span className="material-symbols-outlined">folder_open</span>
+            </button>
+            <div className="w-px h-6 bg-outline/20" />
+            <button
               onClick={handleReturnToStart}
               className="text-on-surface-variant hover:text-primary transition-colors"
               title="Return to start"
@@ -1962,6 +2019,18 @@ export function MainEditor() {
         onAddTrack={handleAddTrack}
         onSelectTrackType={setSelectedTrackType}
       />
+
+      <ProjectBrowserModal
+        isOpen={isProjectBrowserOpen}
+        onClose={() => setIsProjectBrowserOpen(false)}
+        onSelectProject={handleProjectSelect}
+      />
+
+      {saveNotification.visible && (
+        <div className="fixed bottom-4 right-4 bg-primary text-on-primary px-4 py-2 rounded font-mono text-sm font-bold uppercase tracking-wide z-50 shadow-lg" style={{ animation: 'fadeIn 0.3s ease-out' }}>
+          {saveNotification.message}
+        </div>
+      )}
     </div>
   );
 }
