@@ -1,8 +1,9 @@
 type LandingViewProps = {
   onStartProject: () => void;
+  onOpenProjectManager: () => void;
 };
 
-export function LandingView({ onStartProject }: LandingViewProps) {
+export function LandingView({ onStartProject, onOpenProjectManager }: LandingViewProps) {
   return (
     <>
       <header className="bg-[#0e0e0e] text-[#f4ffc6] font-['Inter'] font-mono text-[11px] tracking-widest uppercase flex justify-between items-center w-full px-4 h-12 fixed top-0 z-50 border-b-0">
@@ -49,6 +50,10 @@ export function LandingView({ onStartProject }: LandingViewProps) {
               <button onClick={onStartProject} className="bg-primary text-on-primary font-bold px-8 py-4 uppercase text-sm flex items-center gap-3 active:scale-95 transition-transform">
                 Start New Project
                 <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>play_arrow</span>
+              </button>
+              <button onClick={onOpenProjectManager} className="ghost-border text-white hover:bg-surface-bright px-8 py-4 uppercase text-sm font-bold transition-colors flex items-center gap-3">
+                Project Manager
+                <span className="material-symbols-outlined text-sm">folder_open</span>
               </button>
               <button className="ghost-border text-white hover:bg-surface-bright px-8 py-4 uppercase text-sm font-bold transition-colors">
                 View Documentation

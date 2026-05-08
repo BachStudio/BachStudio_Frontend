@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 import { MainEditor } from './features/editor/MainEditor';
 import { LandingView } from './features/landing/LandingView';
+import { ProjectManagerView } from './features/project/ProjectManagerView';
 import { NewProjectModal } from './features/project/NewProjectModal';
 
 export default function App() {
@@ -26,7 +27,10 @@ export default function App() {
         path="/"
         element={(
           <>
-            <LandingView onStartProject={() => setIsModalOpen(true)} />
+            <LandingView
+              onStartProject={() => setIsModalOpen(true)}
+              onOpenProjectManager={() => navigate('/projects')}
+            />
             <NewProjectModal
               isOpen={isModalOpen}
               selectedTemplate={selectedTemplate}
@@ -41,6 +45,7 @@ export default function App() {
           </>
         )}
       />
+      <Route path="/projects" element={<ProjectManagerView />} />
       <Route path="/editor" element={<MainEditor />} />
     </Routes>
   );

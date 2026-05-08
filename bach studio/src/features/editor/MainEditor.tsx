@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as Tone from 'tone';
 import { AddTrackModal } from './AddTrackModal';
-import { ProjectBrowserModal } from './ProjectBrowserModal';
-import { saveProject, type ProjectData } from './fileUtils';
+import { saveProject, loadProject } from './fileUtils';
 import {
   AUDIO_OUTPUT_COMP_DB,
   AUDIO_SOURCE_OPTIONS,
@@ -96,7 +95,6 @@ export function MainEditor() {
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<SelectedTimelineClip | null>(null);
   const [isLoopPlaybackOn, setIsLoopPlaybackOn] = useState(false);
   const [saveNotification, setSaveNotification] = useState<{ message: string; visible: boolean }>({ message: '', visible: false });
-  const [isProjectBrowserOpen, setIsProjectBrowserOpen] = useState(false);
   const [loopRange, setLoopRange] = useState<{ startBeat: number; endBeat: number }>({
     startBeat: 0,
     endBeat: TIMELINE_BEATS_PER_BAR * 4,
@@ -105,6 +103,7 @@ export function MainEditor() {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const pianoKeysRef = useRef<HTMLDivElement | null>(null);
   const isSyncingScrollRef = useRef(false);
+  const navigate = useNavigate();
   const samplerRef = useRef<Tone.Sampler | null>(null);
   const analogSynthRef = useRef<Tone.PolySynth | null>(null);
   const organSynthRef = useRef<Tone.PolySynth | null>(null);
@@ -871,17 +870,18 @@ export function MainEditor() {
   };
 
   const handleLoadProject = () => {
-    setIsProjectBrowserOpen(true);
+    navigate('/projects');
   };
 
-  const handleProjectSelect = (project: ProjectData) => {
-    setTracks(project.tracks);
-    setBpm(project.bpm);
-    setSaveNotification({ message: `Loaded: ${project.projectName}`, visible: true });
-    setTimeout(() => {
-      setSaveNotification({ message: '', visible: false });
-    }, 2000);
-  };
+  useEffect(() => {
+    const loadedProject = loadProject(projectName);
+    if (!loadedProject) {
+      return;
+    }
+
+    setTracks(loadedProject.tracks);
+    setBpm(loadedProject.bpm);
+  }, [projectName]);
 
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
     try {
@@ -2018,12 +2018,6 @@ export function MainEditor() {
         onClose={() => setIsAddTrackModalOpen(false)}
         onAddTrack={handleAddTrack}
         onSelectTrackType={setSelectedTrackType}
-      />
-
-      <ProjectBrowserModal
-        isOpen={isProjectBrowserOpen}
-        onClose={() => setIsProjectBrowserOpen(false)}
-        onSelectProject={handleProjectSelect}
       />
 
       {saveNotification.visible && (
