@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #f4ffc6;
+  --color-on-primary: #546600;
+  --color-background: #0e0e0e;
+  --color-surface: #131313;
+  --color-surface-card: #1a1a1a;
+  --color-surface-bright: #2c2c2c;
+  --color-outline: #484847;
+  
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Inter Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-white antialiased;
+  }
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.piano-grid {
+  background-size: 40px 24px;
+  background-image: 
+    linear-gradient(to right, #262626 1px, transparent 1px),
+    linear-gradient(to bottom, #262626 1px, transparent 1px);
+}
+
+.piano-key-white { 
+  height: 24px; 
+  background: #e4e2e1; 
+  border-bottom: 1px solid #484847; 
+}
+
+.piano-key-black { 
+  height: 16px; 
+  background: #000; 
+  border-bottom: 1px solid #484847; 
+  margin-top: -8px; 
+  position: relative; 
+  z-index: 10; 
+  width: 60%; 
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0e0e0e;
+}
+::-webkit-scrollbar-thumb {
+  background: #484847;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
