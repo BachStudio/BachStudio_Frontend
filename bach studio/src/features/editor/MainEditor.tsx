@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import lamejs from 'lamejs';
 import * as Tone from 'tone';
-import { AddTrackModal } from './AddTrackModal';
-import { saveProject, loadProject } from './fileUtils';
+import {
+  loadProject,
+  loadProjectFromBackend,
+  saveProject,
+  saveProjectToBackend,
+} from './fileUtils';
+import type { HummingAiNote, HummingStreamEvent } from './fileUtils';
 import {
   AUDIO_OUTPUT_COMP_DB,
   AUDIO_SOURCE_OPTIONS,
@@ -13,7 +19,6 @@ import {
   CLIP_CLASS_BY_TYPE,
   DEFAULT_TRACK_SETTINGS,
   DRUM_OUTPUT_COMP_DB,
-  DRUM_KIT_OPTIONS,
   GRID_COL_WIDTH,
   GRID_ROW_HEIGHT,
   GRID_TOTAL_ROWS,
@@ -25,8 +30,6 @@ import {
   PIANO_STEPS_PER_BEAT,
   TIMELINE_BEATS_PER_BAR,
   TIMELINE_TOTAL_BEATS,
-  TRACK_TYPE_LABEL,
-  TRACK_TYPE_OPTIONS,
 } from './constants';
 import { PianoRollOverlay } from './PianoRollOverlay';
 import { TimelinePanel } from './TimelinePanel';
@@ -62,14 +65,15 @@ type SelectedTimelineClip = {
   clipId: number;
 };
 
+type ExportFormat = 'wav' | 'mp3';
+const MAX_REALTIME_HUMMING_BEATS = TIMELINE_TOTAL_BEATS;
+
 export function MainEditor() {
   const [searchParams] = useSearchParams();
-  const [isAddTrackModalOpen, setIsAddTrackModalOpen] = useState(false);
   const [isPianoRollOpen, setIsPianoRollOpen] = useState(false);
   const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
   const [activePianoTrackId, setActivePianoTrackId] = useState<number | null>(null);
   const [activePianoClipId, setActivePianoClipId] = useState<number | null>(null);
-  const [selectedTrackType, setSelectedTrackType] = useState<TrackType>('Instrument');
   const [tracks, setTracks] = useState<Track[]>([]);
   const [pianoTool, setPianoTool] = useState<PianoTool>('select');
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
@@ -100,6 +104,7 @@ export function MainEditor() {
     endBeat: TIMELINE_BEATS_PER_BAR * 4,
   });
   const [isModified, setIsModified] = useState(false);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   const pianoKeysRef = useRef<HTMLDivElement | null>(null);
@@ -117,6 +122,8 @@ export function MainEditor() {
   const clapSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const audioPlayersRef = useRef<Partial<Record<AudioSourceId, Tone.Player>>>({});
   const playbackTimerRef = useRef<number | null>(null);
+  const liveHummingNoteIdRef = useRef<number | null>(null);
+  const liveHummingNoteIdsRef = useRef<number[]>([]);
   const playbackSessionRef = useRef<null | {
     startWallTime: number;
     startBeat: number;
@@ -145,7 +152,6 @@ export function MainEditor() {
   const activeTrackName = activeTrack?.name ?? 'TRACK';
   const activeTrackNotes = activeClip?.notes ?? [];
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId) ?? null;
-  const busTracks = tracks.filter((track) => track.type === 'Bus');
 
   const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
   const toGainFillPercent = (db: number) => ((clamp(db, -24, 12) + 24) / 36) * 100;
@@ -175,7 +181,7 @@ export function MainEditor() {
 
   const pitchToMidi = (pitch: number) => MIDI_HIGH - pitch;
   const pitchToNoteName = (pitch: number) => Tone.Frequency(pitchToMidi(pitch), 'midi').toNote();
-  const canUsePianoRoll = (track: Track | null) => track !== null && (track.type === 'Instrument' || track.type === 'Drums');
+  const canUsePianoRoll = (track: Track | null) => track !== null && track.type === 'Instrument';
 
   const getAssignedBusTrack = (track: Track) => {
     if (track.outputBusId === null) {
@@ -544,12 +550,22 @@ export function MainEditor() {
     return clamp(session.startBeat + (elapsedSeconds * session.bpm) / 60, 0, TIMELINE_TOTAL_BEATS);
   };
 
-  const buildPlaybackEvents = (): PlaybackNoteEvent[] => {
+  const buildPlaybackEvents = (options?: { respectMuteSolo?: boolean; trackId?: number }): PlaybackNoteEvent[] => {
     const beatSeconds = 60 / bpm;
     const events: PlaybackNoteEvent[] = [];
+    const respectMuteSolo = options?.respectMuteSolo ?? true;
+    const hasSoloedTrack = tracks.some((track) => track.soloed === true);
 
     tracks.forEach((track) => {
+      if (options?.trackId !== undefined && track.id !== options.trackId) {
+        return;
+      }
+
       if (track.type === 'Bus') {
+        return;
+      }
+
+      if (respectMuteSolo && (track.muted === true || (hasSoloedTrack && track.soloed !== true))) {
         return;
       }
 
@@ -857,19 +873,363 @@ export function MainEditor() {
     setSelectedTimelineClip(null);
   };
 
-  const handleSaveProject = () => {
-    const success = saveProject(projectName, tracks, bpm);
-    if (success) {
-      setSaveNotification({ message: `Saved: ${projectName}`, visible: true });
-      setTimeout(() => {
-        setSaveNotification({ message: '', visible: false });
-      }, 2000);
+  const handleSaveProject = async () => {
+    const localSuccess = saveProject(projectName, tracks, bpm);
+    const backendSuccess = await saveProjectToBackend(projectName, tracks, bpm);
+
+    if (localSuccess || backendSuccess) {
+      originalTracksRef.current = JSON.parse(JSON.stringify(tracks));
+      originalBpmRef.current = bpm;
+      setIsModified(false);
+      setSaveNotification({
+        message: backendSuccess ? `Saved: ${projectName}` : `Saved locally: ${projectName}`,
+        visible: true,
+      });
     } else {
       setSaveNotification({ message: 'Save failed', visible: true });
-      setTimeout(() => {
-        setSaveNotification({ message: '', visible: false });
-      }, 2000);
     }
+
+    setTimeout(() => {
+      setSaveNotification({ message: '', visible: false });
+    }, 2000);
+  };
+
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const showSaveNotification = (message: string) => {
+    setSaveNotification({ message, visible: true });
+    setTimeout(() => {
+      setSaveNotification({ message: '', visible: false });
+    }, 2000);
+  };
+
+  const writeAscii = (view: DataView, offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+
+  const audioBufferToWavBlob = (buffer: AudioBuffer) => {
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const dataSize = buffer.length * blockAlign;
+    const arrayBuffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(arrayBuffer);
+    const channelData = Array.from({ length: numChannels }, (_, channel) => buffer.getChannelData(channel));
+    let offset = 44;
+
+    writeAscii(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeAscii(view, 8, 'WAVE');
+    writeAscii(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true);
+    writeAscii(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    for (let sampleIndex = 0; sampleIndex < buffer.length; sampleIndex += 1) {
+      for (let channel = 0; channel < numChannels; channel += 1) {
+        const sample = clamp(channelData[channel][sampleIndex], -1, 1);
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += bytesPerSample;
+      }
+    }
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
+  };
+
+  const encodeVariableLengthQuantity = (value: number) => {
+    let buffer = value & 0x7f;
+    const bytes = [];
+
+    while ((value >>= 7) > 0) {
+      buffer <<= 8;
+      buffer |= (value & 0x7f) | 0x80;
+    }
+
+    while (true) {
+      bytes.push(buffer & 0xff);
+      if (buffer & 0x80) {
+        buffer >>= 8;
+      } else {
+        break;
+      }
+    }
+
+    return bytes;
+  };
+
+  const numberToBytes = (value: number, byteCount: number) =>
+    Array.from({ length: byteCount }, (_, index) => (value >> ((byteCount - index - 1) * 8)) & 0xff);
+
+  const exportMidiFile = (events: PlaybackNoteEvent[], safeProjectName: string) => {
+    const ticksPerBeat = 480;
+    const tempoMicroseconds = Math.round(60000000 / bpm);
+    const trackBytes: number[] = [
+      0x00,
+      0xff,
+      0x51,
+      0x03,
+      ...numberToBytes(tempoMicroseconds, 3),
+      0x00,
+      0xc0,
+      0x00,
+    ];
+    const midiEvents = events
+      .filter((event) => event.pitch !== null)
+      .flatMap((event) => {
+        const startTick = Math.max(0, Math.round(event.startBeat * ticksPerBeat));
+        const durationBeats = Math.max(1 / ticksPerBeat, (event.durationSeconds * bpm) / 60);
+        const endTick = startTick + Math.max(1, Math.round(durationBeats * ticksPerBeat));
+        const midiNote = pitchToMidi(event.pitch ?? 0);
+        const velocity = Math.round(dbToVelocity(event.effectiveVolumeDb + getEventOutputCompDb(event)) * 100);
+
+        return [
+          { tick: startTick, bytes: [0x90, midiNote, clamp(velocity, 1, 127)] },
+          { tick: endTick, bytes: [0x80, midiNote, 0x40] },
+        ];
+      })
+      .sort((first, second) => first.tick - second.tick || first.bytes[0] - second.bytes[0]);
+    let previousTick = 0;
+
+    midiEvents.forEach((event) => {
+      trackBytes.push(...encodeVariableLengthQuantity(event.tick - previousTick), ...event.bytes);
+      previousTick = event.tick;
+    });
+
+    trackBytes.push(0x00, 0xff, 0x2f, 0x00);
+
+    const header = [
+      0x4d,
+      0x54,
+      0x68,
+      0x64,
+      0x00,
+      0x00,
+      0x00,
+      0x06,
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      ...numberToBytes(ticksPerBeat, 2),
+    ];
+    const trackHeader = [0x4d, 0x54, 0x72, 0x6b, ...numberToBytes(trackBytes.length, 4)];
+    const midiBlob = new Blob([new Uint8Array([...header, ...trackHeader, ...trackBytes])], { type: 'audio/midi' });
+
+    downloadBlob(midiBlob, `${safeProjectName}.mid`);
+  };
+
+  const renderProjectAudioBuffer = async (events: PlaybackNoteEvent[]) => {
+    const sampleRate = 44100;
+    const beatSeconds = 60 / bpm;
+    const endBeat = Math.min(
+      TIMELINE_TOTAL_BEATS,
+      Math.max(4, ...events.map((event) => event.startBeat + event.durationSeconds / beatSeconds)),
+    );
+    const durationSeconds = Math.max(1, endBeat * beatSeconds + 1);
+    const renderedToneBuffer = await Tone.Offline(async () => {
+      const sampler = new Tone.Sampler({
+        urls: {
+          A0: 'A0.mp3',
+          C1: 'C1.mp3',
+          'D#1': 'Ds1.mp3',
+          'F#1': 'Fs1.mp3',
+          A1: 'A1.mp3',
+          C2: 'C2.mp3',
+          'D#2': 'Ds2.mp3',
+          'F#2': 'Fs2.mp3',
+          A2: 'A2.mp3',
+          C3: 'C3.mp3',
+          'D#3': 'Ds3.mp3',
+          'F#3': 'Fs3.mp3',
+          A3: 'A3.mp3',
+          C4: 'C4.mp3',
+          'D#4': 'Ds4.mp3',
+          'F#4': 'Fs4.mp3',
+          A4: 'A4.mp3',
+          C5: 'C5.mp3',
+          'D#5': 'Ds5.mp3',
+          'F#5': 'Fs5.mp3',
+          A5: 'A5.mp3',
+          C6: 'C6.mp3',
+          'D#6': 'Ds6.mp3',
+          'F#6': 'Fs6.mp3',
+          A6: 'A6.mp3',
+          C7: 'C7.mp3',
+          'D#7': 'Ds7.mp3',
+          'F#7': 'Fs7.mp3',
+          A7: 'A7.mp3',
+          C8: 'C8.mp3',
+        },
+        release: 1,
+        baseUrl: 'https://tonejs.github.io/audio/salamander/',
+      }).toDestination();
+      const analogSynth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: 'sawtooth' },
+        envelope: { attack: 0.01, decay: 0.2, sustain: 0.35, release: 0.3 },
+      }).toDestination();
+      const organSynth = new Tone.PolySynth(Tone.FMSynth, {
+        harmonicity: 2,
+        modulationIndex: 2.2,
+        envelope: { attack: 0.02, decay: 0.15, sustain: 0.7, release: 0.5 },
+      }).toDestination();
+      const bassSynth = new Tone.MonoSynth({
+        oscillator: { type: 'square' },
+        filter: { Q: 2.4, type: 'lowpass', rolloff: -24 },
+        envelope: { attack: 0.005, decay: 0.2, sustain: 0.2, release: 0.25 },
+        filterEnvelope: { attack: 0.005, decay: 0.18, sustain: 0.15, release: 0.2, baseFrequency: 80, octaves: 3 },
+      }).toDestination();
+
+      await Tone.loaded();
+
+      events.forEach((event) => {
+        if (event.pitch === null) {
+          return;
+        }
+
+        const noteName = pitchToNoteName(event.pitch);
+        const startTime = event.startBeat * beatSeconds;
+        const duration = Math.max(0.05, event.durationSeconds);
+        const compensatedDb = event.effectiveVolumeDb + getEventOutputCompDb(event);
+        const velocity = dbToVelocity(compensatedDb);
+
+        if (event.instrumentPresetId === 'piano') {
+          sampler.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        if (event.instrumentPresetId === 'analog') {
+          analogSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        if (event.instrumentPresetId === 'organ') {
+          organSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        bassSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+      });
+    }, durationSeconds, 2, sampleRate);
+    const renderedBuffer = renderedToneBuffer.get();
+
+    if (!renderedBuffer) {
+      throw new Error('Rendered buffer is empty');
+    }
+
+    return renderedBuffer;
+  };
+
+  const channelToInt16 = (channel: Float32Array) => {
+    const samples = new Int16Array(channel.length);
+
+    for (let index = 0; index < channel.length; index += 1) {
+      const sample = clamp(channel[index], -1, 1);
+      samples[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    }
+
+    return samples;
+  };
+
+  const audioBufferToMp3Blob = (buffer: AudioBuffer) => {
+    const left = channelToInt16(buffer.getChannelData(0));
+    const right = channelToInt16(buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : buffer.getChannelData(0));
+    const encoder = new lamejs.Mp3Encoder(2, buffer.sampleRate, 192);
+    const chunkSize = 1152;
+    const mp3Chunks: ArrayBuffer[] = [];
+    const copyToArrayBuffer = (bytes: Int8Array) => {
+      const copy = new Uint8Array(bytes.length);
+      copy.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+      return copy.buffer;
+    };
+
+    for (let start = 0; start < left.length; start += chunkSize) {
+      const leftChunk = left.subarray(start, start + chunkSize);
+      const rightChunk = right.subarray(start, start + chunkSize);
+      const encoded = encoder.encodeBuffer(leftChunk, rightChunk);
+
+      if (encoded.length > 0) {
+        mp3Chunks.push(copyToArrayBuffer(encoded));
+      }
+    }
+
+    const flushed = encoder.flush();
+    if (flushed.length > 0) {
+      mp3Chunks.push(copyToArrayBuffer(flushed));
+    }
+
+    return new Blob(mp3Chunks, { type: 'audio/mpeg' });
+  };
+
+  const handleExportProject = async (format: ExportFormat) => {
+    setIsExportMenuOpen(false);
+    const events = buildPlaybackEvents().filter((event) => event.trackType === 'Instrument' && event.pitch !== null);
+    const safeProjectName = projectName.trim().replace(/[\\/:*?"<>|]/g, '_') || 'bach-studio-project';
+
+    if (events.length === 0) {
+      showSaveNotification('No piano notes to export');
+      return;
+    }
+
+    setSaveNotification({ message: `Rendering ${format.toUpperCase()}...`, visible: true });
+
+    try {
+      const renderedBuffer = await renderProjectAudioBuffer(events);
+
+      if (format === 'mp3') {
+        const mp3Blob = await audioBufferToMp3Blob(renderedBuffer);
+        downloadBlob(mp3Blob, `${safeProjectName}.mp3`);
+        showSaveNotification(`Exported MP3: ${safeProjectName}`);
+        return;
+      }
+
+      const wavBlob = audioBufferToWavBlob(renderedBuffer);
+      downloadBlob(wavBlob, `${safeProjectName}.wav`);
+      showSaveNotification(`Exported WAV: ${safeProjectName}`);
+    } catch (error) {
+      console.error(`Failed to export ${format}:`, error);
+      showSaveNotification(error instanceof Error ? error.message : `${format.toUpperCase()} export failed`);
+    }
+  };
+
+  const handleExportSelectedTrackMidi = () => {
+    if (!selectedTrack || selectedTrack.type !== 'Instrument') {
+      showSaveNotification('Select an instrument track first');
+      return;
+    }
+
+    const events = buildPlaybackEvents({ respectMuteSolo: false, trackId: selectedTrack.id }).filter(
+      (event) => event.trackType === 'Instrument' && event.pitch !== null,
+    );
+
+    if (events.length === 0) {
+      showSaveNotification('Selected track has no MIDI notes');
+      return;
+    }
+
+    const safeProjectName = projectName.trim().replace(/[\\/:*?"<>|]/g, '_') || 'bach-studio-project';
+    const safeTrackName = selectedTrack.name.trim().replace(/[\\/:*?"<>|]/g, '_') || 'track';
+
+    exportMidiFile(events, `${safeProjectName}-${safeTrackName}`);
+    showSaveNotification(`Exported MIDI: ${safeTrackName}`);
   };
 
   const handleLoadProject = () => {
@@ -878,23 +1238,46 @@ export function MainEditor() {
         '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
       );
       if (shouldSave) {
-        handleSaveProject();
+        void handleSaveProject();
       }
     }
     navigate('/projects');
   };
 
   useEffect(() => {
+    let isCancelled = false;
+
+    const applyProject = (loadedProject: { tracks: Track[]; bpm: number }) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setTracks(loadedProject.tracks);
+      setBpm(loadedProject.bpm);
+      originalTracksRef.current = JSON.parse(JSON.stringify(loadedProject.tracks));
+      originalBpmRef.current = loadedProject.bpm;
+      setIsModified(false);
+    };
+
     const loadedProject = loadProject(projectName);
-    if (!loadedProject) {
-      return;
+    if (loadedProject) {
+      applyProject(loadedProject);
+      return () => {
+        isCancelled = true;
+      };
     }
 
-    setTracks(loadedProject.tracks);
-    setBpm(loadedProject.bpm);
-    originalTracksRef.current = JSON.parse(JSON.stringify(loadedProject.tracks));
-    originalBpmRef.current = loadedProject.bpm;
-    setIsModified(false);
+    if (!projectName.startsWith('SESSION_')) {
+      void loadProjectFromBackend(projectName).then((backendProject) => {
+        if (backendProject) {
+          applyProject(backendProject);
+        }
+      });
+    }
+
+    return () => {
+      isCancelled = true;
+    };
   }, [projectName]);
 
   // 변경 감지: tracks나 bpm이 원본과 다르면 isModified = true
@@ -920,7 +1303,7 @@ export function MainEditor() {
           '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
         )
       ) {
-        handleSaveProject();
+        void handleSaveProject();
       } else {
         // 사용자가 "아니오"를 선택해도 이미 navigate가 일어났으므로,
         // 돌아가도록 forward를 누르거나 그냥 진행
@@ -1020,7 +1403,7 @@ export function MainEditor() {
 
       if (isSave) {
         event.preventDefault();
-        handleSaveProject();
+        void handleSaveProject();
         return;
       }
 
@@ -1051,7 +1434,6 @@ export function MainEditor() {
     copiedMidiChunk,
     selectedTimelineClip,
     tracks,
-    busTracks,
     projectName,
     bpm,
     handleCopySelectedMidiTrack,
@@ -1124,25 +1506,118 @@ export function MainEditor() {
     });
   };
 
+  const convertHummingNoteToPianoRollNote = (note: HummingAiNote, clipLengthBeats: number) => {
+    const maxCols = getClipTotalCols(clipLengthBeats);
+    const start = clamp(Math.round(note.startBeat * PIANO_STEPS_PER_BEAT), 0, maxCols - 1);
+    const length = clamp(Math.round(note.durationBeats * PIANO_STEPS_PER_BEAT), 1, maxCols - start);
+    const pitch = clamp(MIDI_HIGH - (note.pitch ?? note.midi), 0, GRID_TOTAL_ROWS - 1);
+
+    return { start, pitch, length };
+  };
+
+  const extendActiveClipForRealtimeBeat = (targetBeat: number) => {
+    if (!activeTrack || !activeClip) {
+      return CLIP_DEFAULT_LENGTH_BEATS;
+    }
+
+    const snappedLength = Math.ceil(Math.max(targetBeat, activeClip.length, CLIP_SNAP_BEATS) / CLIP_SNAP_BEATS) * CLIP_SNAP_BEATS;
+    const nextLength = clamp(snappedLength, activeClip.length, MAX_REALTIME_HUMMING_BEATS);
+
+    if (nextLength > activeClip.length) {
+      updateTrackClips(activeTrack.id, (clips) =>
+        clips.map((clip) => (clip.id === activeClip.id ? { ...clip, length: Math.max(clip.length, nextLength) } : clip)),
+      );
+    }
+
+    return nextLength;
+  };
+
+  const handleStartRealtimeHumming = () => {
+    if (!activeTrack || !activeClip) {
+      showSaveNotification('Open a piano roll clip before recording');
+      return false;
+    }
+
+    liveHummingNoteIdRef.current = null;
+    liveHummingNoteIdsRef.current = [];
+    setSelectedNoteIds([]);
+    return true;
+  };
+
+  const handleRealtimeHummingEvent = (event: HummingStreamEvent) => {
+    if (!activeTrack || !activeClip) {
+      return;
+    }
+
+    if (event.type === 'complete') {
+      const latestClipLength = extendActiveClipForRealtimeBeat(
+        Math.max(CLIP_SNAP_BEATS, ...event.notes.map((note) => note.startBeat + note.durationBeats + CLIP_SNAP_BEATS)),
+      );
+      const liveIds = new Set(liveHummingNoteIdsRef.current);
+      const nextIds = event.notes.map((note, index) => Date.now() + Math.round(note.startBeat * 1000) + note.midi + index);
+      const finalNotes = event.notes.map((note, index) => ({
+        id: nextIds[index],
+        ...convertHummingNoteToPianoRollNote(note, latestClipLength),
+      }));
+
+      updateActiveClipNotes((notes) => [
+        ...notes.filter((note) => !liveIds.has(note.id)),
+        ...finalNotes,
+      ]);
+      liveHummingNoteIdRef.current = null;
+      liveHummingNoteIdsRef.current = [];
+      setSelectedNoteIds(nextIds);
+      return;
+    }
+
+    if (event.type !== 'note_on' && event.type !== 'note_update' && event.type !== 'note_off') {
+      if (event.type === 'pitch') {
+        extendActiveClipForRealtimeBeat(event.beat + CLIP_SNAP_BEATS);
+      }
+      return;
+    }
+
+    const noteEndBeat = event.note.startBeat + event.note.durationBeats + CLIP_SNAP_BEATS;
+    const realtimeClipLength = extendActiveClipForRealtimeBeat(noteEndBeat);
+    const convertedNote = convertHummingNoteToPianoRollNote(event.note, realtimeClipLength);
+
+    if (event.type === 'note_on' || liveHummingNoteIdRef.current === null) {
+      const noteId = Date.now() + Math.round(event.note.startBeat * 1000) + event.note.midi;
+      liveHummingNoteIdRef.current = noteId;
+      liveHummingNoteIdsRef.current = [...liveHummingNoteIdsRef.current, noteId];
+      updateActiveClipNotes((notes) => [...notes, { id: noteId, ...convertedNote }]);
+      setSelectedNoteIds([noteId]);
+      return;
+    }
+
+    const noteId = liveHummingNoteIdRef.current;
+    updateActiveClipNotes((notes) =>
+      notes.map((note) => (note.id === noteId ? { ...note, ...convertedNote } : note)),
+    );
+    setSelectedNoteIds([noteId]);
+
+    if (event.type === 'note_off') {
+      liveHummingNoteIdRef.current = null;
+    }
+  };
+
   const handleAddTrack = () => {
-    const selectedOption = TRACK_TYPE_OPTIONS.find((option) => option.id === selectedTrackType) ?? TRACK_TYPE_OPTIONS[0];
     const nextIndex = tracks.length + 1;
-    const defaultOutputBusId = selectedOption.id === 'Bus' ? null : (busTracks[0]?.id ?? null);
     const createdTrack: Track = {
       id: Date.now() + nextIndex,
-      type: selectedOption.id,
-      name: `${String(nextIndex).padStart(2, '0')} ${selectedOption.id.toUpperCase()} TRACK`,
-      icon: selectedOption.icon,
-      clipClass: CLIP_CLASS_BY_TYPE[selectedOption.id] ?? 'bg-primary/10 border-primary/20',
+      type: 'Instrument',
+      name: `${String(nextIndex).padStart(2, '0')} PIANO TRACK`,
+      icon: 'piano',
+      clipClass: CLIP_CLASS_BY_TYPE.Instrument,
       clips: [],
+      muted: false,
+      soloed: false,
       ...DEFAULT_TRACK_SETTINGS,
-      outputBusId: defaultOutputBusId,
+      outputBusId: null,
     };
 
     setTracks((prev) => [...prev, createdTrack]);
     setSelectedTrackId(createdTrack.id);
-
-    setIsAddTrackModalOpen(false);
   };
 
   const handleTrackClick = (trackId: number) => {
@@ -1158,33 +1633,28 @@ export function MainEditor() {
     updateTrackById(selectedTrack.id, (track) => ({ ...track, instrumentPresetId: presetId }));
   };
 
-  const handleSelectedTrackDrumKitChange = (kitId: Track['drumKitId']) => {
+  const handleSelectedTrackNameChange = (name: string) => {
     if (!selectedTrack) {
       return;
     }
 
-    updateTrackById(selectedTrack.id, (track) => ({ ...track, drumKitId: kitId }));
+    updateTrackById(selectedTrack.id, (track) => ({ ...track, name }));
   };
 
-  const handleSelectedTrackAudioSourceChange = (sourceId: AudioSourceId) => {
-    if (!selectedTrack) {
+  const handleSelectedTrackNameBlur = () => {
+    if (!selectedTrack || selectedTrack.name.trim()) {
       return;
     }
 
-    updateTrackById(selectedTrack.id, (track) => ({ ...track, audioSourceId: sourceId }));
-    void ensureAudioPlayer(sourceId);
+    updateTrackById(selectedTrack.id, (track) => ({ ...track, name: `${String(track.id).slice(-2)} PIANO TRACK` }));
   };
 
-  const handleSelectedTrackOutputBusChange = (rawValue: string) => {
-    if (!selectedTrack || selectedTrack.type === 'Bus') {
-      return;
-    }
+  const handleToggleTrackMute = (trackId: number) => {
+    updateTrackById(trackId, (track) => ({ ...track, muted: track.muted !== true }));
+  };
 
-    const outputBusId = rawValue === 'master' ? null : Number.parseInt(rawValue, 10);
-    updateTrackById(selectedTrack.id, (track) => ({
-      ...track,
-      outputBusId: Number.isFinite(outputBusId as number) ? outputBusId : null,
-    }));
+  const handleToggleTrackSolo = (trackId: number) => {
+    updateTrackById(trackId, (track) => ({ ...track, soloed: track.soloed !== true }));
   };
 
   const handleSelectedTrackVolumeChange = (rawValue: string) => {
@@ -1208,30 +1678,6 @@ export function MainEditor() {
     updateTrackById(selectedTrack.id, (track) => ({
       ...track,
       volumeDb: clamp(track.volumeDb + delta, -24, 12),
-    }));
-  };
-
-  const handleSelectedBusGainChange = (rawValue: string) => {
-    if (!selectedTrack || selectedTrack.type !== 'Bus') {
-      return;
-    }
-
-    const parsed = Number.parseFloat(rawValue);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
-
-    updateTrackById(selectedTrack.id, (track) => ({ ...track, busGainDb: clamp(parsed, -24, 12) }));
-  };
-
-  const nudgeSelectedBusGain = (delta: number) => {
-    if (!selectedTrack || selectedTrack.type !== 'Bus') {
-      return;
-    }
-
-    updateTrackById(selectedTrack.id, (track) => ({
-      ...track,
-      busGainDb: clamp(track.busGainDb + delta, -24, 12),
     }));
   };
 
@@ -1721,13 +2167,6 @@ export function MainEditor() {
             <span className="text-lg font-black tracking-tighter text-[#f4ffc6] uppercase">Bach Studio</span>
             <span className="text-[9px] font-mono text-zinc-500 uppercase">{projectName}</span>
           </div>
-          <nav className="flex items-center gap-4">
-            <a className="text-[#f4ffc6] border-b-2 border-[#f4ffc6] pb-1 font-['Inter'] font-mono text-[11px] tracking-widest uppercase" href="#">Track</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors font-['Inter'] font-mono text-[11px] tracking-widest uppercase" href="#">File</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors font-['Inter'] font-mono text-[11px] tracking-widest uppercase" href="#">Edit</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors font-['Inter'] font-mono text-[11px] tracking-widest uppercase" href="#">Mix</a>
-            <a className="text-zinc-500 hover:bg-[#2c2c2c] transition-colors font-['Inter'] font-mono text-[11px] tracking-widest uppercase" href="#">View</a>
-          </nav>
         </div>
 
         <div className="flex items-center bg-surface-container-low px-4 py-1 gap-8 ghost-border">
@@ -1810,176 +2249,128 @@ export function MainEditor() {
         <div className="flex items-center gap-4">
           <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">help</span></button>
           <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">settings</span></button>
-          <button className="bg-primary text-on-primary px-4 py-1 font-mono text-[11px] font-bold uppercase tracking-widest active:bg-white transition-all">Export</button>
+          <div className="relative">
+            <button
+              onClick={() => setIsExportMenuOpen((prev) => !prev)}
+              className="bg-primary text-on-primary px-4 py-1 font-mono text-[11px] font-bold uppercase tracking-widest active:bg-white transition-all flex items-center gap-2"
+            >
+              Export
+              <span className="material-symbols-outlined text-[16px]">expand_more</span>
+            </button>
+            {isExportMenuOpen && (
+              <div className="absolute right-0 top-8 z-[90] w-36 bg-[#111] border border-primary/30 shadow-[0_12px_30px_rgba(0,0,0,0.45)] py-1">
+                {(['wav', 'mp3'] as ExportFormat[]).map((format) => (
+                  <button
+                    key={format}
+                    onClick={() => {
+                      void handleExportProject(format);
+                    }}
+                    className="w-full px-3 py-2 text-left text-[10px] font-mono uppercase tracking-widest text-zinc-200 hover:bg-primary hover:text-on-primary"
+                  >
+                    {format.toUpperCase()} (.{format})
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      <section className="h-14 bg-[#101010] border-y border-outline-variant/20 px-4 flex items-center overflow-x-auto">
+      <section className="h-16 bg-[#101010] border-y border-outline-variant/20 px-4 flex items-center overflow-x-auto">
         {selectedTrack ? (
           <div className="w-full min-w-max flex items-center gap-3">
-            <div className="h-10 px-3 rounded-sm bg-[#171717] border border-[#2d2d2d] flex flex-col justify-center">
-              <span className="text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap">
-                {selectedTrack.name} / {TRACK_TYPE_LABEL[selectedTrack.type]}
-              </span>
+            <div className="h-11 px-3 rounded-sm bg-[#171717] border border-[#2d2d2d] flex items-center gap-3">
+              <span className="material-symbols-outlined text-primary text-[20px]">piano</span>
+              <div className="flex flex-col leading-tight">
+                <input
+                  type="text"
+                  value={selectedTrack.name}
+                  onChange={(event) => handleSelectedTrackNameChange(event.target.value)}
+                  onBlur={handleSelectedTrackNameBlur}
+                  className="w-44 bg-transparent text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap outline-none border-b border-transparent focus:border-primary/60"
+                  title="Edit track name"
+                />
+                <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">
+                  Piano Instrument Track
+                </span>
+              </div>
             </div>
 
             {selectedTrack.type === 'Instrument' && (
-              <label className="editor-control-card w-[220px]">
-                <span className="editor-control-label">Instrument</span>
-                <select
-                  value={selectedTrack.instrumentPresetId}
-                  onChange={(event) => handleSelectedTrackInstrumentChange(event.target.value as Track['instrumentPresetId'])}
-                  className="editor-control-select"
-                >
-                  {INSTRUMENT_PRESET_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            {selectedTrack.type === 'Drums' && (
-              <label className="editor-control-card w-[220px]">
-                <span className="editor-control-label">Drum Kit</span>
-                <select
-                  value={selectedTrack.drumKitId}
-                  onChange={(event) => handleSelectedTrackDrumKitChange(event.target.value as Track['drumKitId'])}
-                  className="editor-control-select"
-                >
-                  {DRUM_KIT_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            {selectedTrack.type === 'Audio' && (
-              <label className="editor-control-card w-[220px]">
-                <span className="editor-control-label">Audio Source</span>
-                <select
-                  value={selectedTrack.audioSourceId}
-                  onChange={(event) => handleSelectedTrackAudioSourceChange(event.target.value as AudioSourceId)}
-                  className="editor-control-select"
-                >
-                  {AUDIO_SOURCE_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            {selectedTrack.type !== 'Bus' && (
-              <label className="editor-control-card w-[320px]">
-                <span className="editor-control-label">Volume</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => nudgeSelectedTrackVolume(-1)}
-                    className="editor-step-button"
-                    title="Lower volume"
+              <>
+                <label className="editor-control-card w-[240px]">
+                  <span className="editor-control-label">Instrument</span>
+                  <select
+                    value={selectedTrack.instrumentPresetId}
+                    onChange={(event) => handleSelectedTrackInstrumentChange(event.target.value as Track['instrumentPresetId'])}
+                    className="editor-control-select"
                   >
-                    -
-                  </button>
-                  <input
-                    type="range"
-                    min={-24}
-                    max={12}
-                    step={1}
-                    value={selectedTrack.volumeDb}
-                    onChange={(event) => handleSelectedTrackVolumeChange(event.target.value)}
-                    className="editor-fader"
-                    style={{
-                      background: `linear-gradient(90deg, #f4ffc6 ${toGainFillPercent(selectedTrack.volumeDb)}%, #2a2a2a ${toGainFillPercent(selectedTrack.volumeDb)}%)`,
-                    }}
-                  />
-                  <button
-                    onClick={() => nudgeSelectedTrackVolume(1)}
-                    className="editor-step-button"
-                    title="Raise volume"
-                  >
-                    +
-                  </button>
-                  <span className="editor-value-badge">{selectedTrack.volumeDb.toFixed(0)}dB</span>
-                </div>
-              </label>
-            )}
+                    {INSTRUMENT_PRESET_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
 
-            {selectedTrack.type !== 'Bus' && (
-              <label className="editor-control-card w-[190px]">
-                <span className="editor-control-label">Output</span>
-                <select
-                  value={selectedTrack.outputBusId === null ? 'master' : String(selectedTrack.outputBusId)}
-                  onChange={(event) => handleSelectedTrackOutputBusChange(event.target.value)}
-                  className="editor-control-select"
+                <label className="editor-control-card w-[360px]">
+                  <span className="editor-control-label">Volume</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => nudgeSelectedTrackVolume(-1)}
+                      className="editor-step-button"
+                      title="Lower volume"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">remove</span>
+                    </button>
+                    <input
+                      type="range"
+                      min={-24}
+                      max={12}
+                      step={1}
+                      value={selectedTrack.volumeDb}
+                      onChange={(event) => handleSelectedTrackVolumeChange(event.target.value)}
+                      className="editor-fader"
+                      style={{
+                        background: `linear-gradient(90deg, #f4ffc6 ${toGainFillPercent(selectedTrack.volumeDb)}%, #2a2a2a ${toGainFillPercent(selectedTrack.volumeDb)}%)`,
+                      }}
+                    />
+                    <button
+                      onClick={() => nudgeSelectedTrackVolume(1)}
+                      className="editor-step-button"
+                      title="Raise volume"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">add</span>
+                    </button>
+                    <span className="editor-value-badge">{selectedTrack.volumeDb.toFixed(0)}dB</span>
+                  </div>
+                </label>
+
+                <button
+                  onClick={handlePreviewSelectedTrack}
+                  className="h-11 px-4 bg-[#181818] hover:bg-[#202020] text-primary text-[11px] font-bold uppercase tracking-widest border border-primary/30 transition-colors flex items-center gap-2"
                 >
-                  <option value="master">Master</option>
-                  {busTracks.map((busTrack) => (
-                    <option key={busTrack.id} value={busTrack.id}>{busTrack.name}</option>
-                  ))}
-                </select>
-              </label>
+                  <span className="material-symbols-outlined text-[17px]" style={{ fontVariationSettings: "'FILL' 1" }}>play_arrow</span>
+                  Preview
+                </button>
+
+                <button
+                  onClick={handleExportSelectedTrackMidi}
+                  className="h-11 px-4 bg-[#181818] hover:bg-[#202020] text-[#66d0ff] text-[11px] font-bold uppercase tracking-widest border border-[#66d0ff]/30 transition-colors flex items-center gap-2"
+                  title="Export selected track as MIDI"
+                >
+                  <span className="material-symbols-outlined text-[17px]">download</span>
+                  MIDI
+                </button>
+              </>
             )}
 
-            {selectedTrack.type === 'Bus' && (
-              <label className="editor-control-card w-[320px]">
-                <span className="editor-control-label">Bus Gain</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => nudgeSelectedBusGain(-1)}
-                    className="editor-step-button"
-                    title="Lower gain"
-                  >
-                    -
-                  </button>
-                  <input
-                    type="range"
-                    min={-24}
-                    max={12}
-                    step={1}
-                    value={selectedTrack.busGainDb}
-                    onChange={(event) => handleSelectedBusGainChange(event.target.value)}
-                    className="editor-fader"
-                    style={{
-                      background: `linear-gradient(90deg, #88f6d7 ${toGainFillPercent(selectedTrack.busGainDb)}%, #2a2a2a ${toGainFillPercent(selectedTrack.busGainDb)}%)`,
-                    }}
-                  />
-                  <button
-                    onClick={() => nudgeSelectedBusGain(1)}
-                    className="editor-step-button"
-                    title="Raise gain"
-                  >
-                    +
-                  </button>
-                  <span className="editor-value-badge text-[#88f6d7]">{selectedTrack.busGainDb.toFixed(0)}dB</span>
-                </div>
-              </label>
+            {selectedTrack.type !== 'Instrument' && (
+              <div className="h-11 px-4 bg-[#171717] border border-[#2d2d2d] flex items-center text-[10px] font-mono uppercase tracking-widest text-zinc-500">
+                This build supports piano instrument tracks only
+              </div>
             )}
-
-            {selectedTrack.type !== 'Bus' && (
-              <button
-                onClick={handlePreviewSelectedTrack}
-                className="h-10 px-4 bg-[#181818] hover:bg-[#202020] text-primary text-[11px] font-bold uppercase tracking-widest border border-primary/30 transition-colors"
-              >
-                Preview
-              </button>
-            )}
-
-            <button
-              onClick={handleCopySelectedMidiTrack}
-              disabled={!selectedTrack || !canUsePianoRoll(selectedTrack)}
-              className="h-10 px-4 bg-[#181818] hover:bg-[#202020] disabled:opacity-35 disabled:cursor-not-allowed text-zinc-300 text-[10px] font-bold uppercase tracking-widest border border-zinc-600/40 transition-colors"
-            >
-              Copy MIDI
-            </button>
-            <button
-              onClick={handlePasteMidiTrack}
-              disabled={!copiedMidiChunk || !selectedTrack || !canUsePianoRoll(selectedTrack)}
-              className="h-10 px-4 bg-[#181818] hover:bg-[#202020] disabled:opacity-35 disabled:cursor-not-allowed text-zinc-300 text-[10px] font-bold uppercase tracking-widest border border-zinc-600/40 transition-colors"
-            >
-              Paste MIDI
-            </button>
           </div>
         ) : (
-          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Select a track to edit sound and routing</span>
+          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Add or select a piano track to edit sound and notes</span>
         )}
       </section>
 
@@ -1994,9 +2385,11 @@ export function MainEditor() {
           loopRange={loopRange}
           onLoopRangeChange={handleLoopRangeUpdate}
           onSeekBeat={handleSeekBeat}
-          onOpenAddTrack={() => setIsAddTrackModalOpen(true)}
+          onOpenAddTrack={handleAddTrack}
           onTrackClick={handleTrackClick}
           onTrackDoubleClick={handleTrackDoubleClick}
+          onToggleTrackMute={handleToggleTrackMute}
+          onToggleTrackSolo={handleToggleTrackSolo}
           onTrackLaneDoubleClick={handleTrackLaneDoubleClick}
           onClipMouseDown={handleClipMouseDown}
           onClipDoubleClick={handleClipDoubleClick}
@@ -2007,7 +2400,10 @@ export function MainEditor() {
       <PianoRollOverlay
         isOpen={isPianoRollOpen}
         activeTrackName={activeTrackName}
+        bpm={bpm}
         bpmLabel={bpmLabel}
+        clipLengthBeats={activeClip?.length ?? CLIP_DEFAULT_LENGTH_BEATS}
+        maxRecordingBeats={MAX_REALTIME_HUMMING_BEATS}
         pianoTool={pianoTool}
         pianoRows={pianoRows}
         activeTrackNotes={activeTrackNotes}
@@ -2030,14 +2426,8 @@ export function MainEditor() {
         onSyncVerticalScroll={syncVerticalScroll}
         onNoteMouseDown={handleNoteMouseDown}
         onDeleteNote={handleDeleteNote}
-      />
-
-      <AddTrackModal
-        isOpen={isAddTrackModalOpen}
-        selectedTrackType={selectedTrackType}
-        onClose={() => setIsAddTrackModalOpen(false)}
-        onAddTrack={handleAddTrack}
-        onSelectTrackType={setSelectedTrackType}
+        onStartRealtimeHumming={handleStartRealtimeHumming}
+        onRealtimeHummingEvent={handleRealtimeHummingEvent}
       />
 
       {saveNotification.visible && (

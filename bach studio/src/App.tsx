@@ -35,7 +35,6 @@ const generateUniqueName = () => {
 export default function App() {
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState('Vocal Mask');
   const [projectName, setProjectName] = useState('');
   const [projectBpm, setProjectBpm] = useState('128');
 
@@ -77,12 +76,10 @@ export default function App() {
             />
             <NewProjectModal
               isOpen={isModalOpen}
-              selectedTemplate={selectedTemplate}
               projectName={projectName}
               projectBpm={projectBpm}
               onClose={() => setIsModalOpen(false)}
               onStart={handleStart}
-              onSelectTemplate={setSelectedTemplate}
               onProjectNameChange={setProjectName}
               onProjectBpmChange={setProjectBpm}
             />

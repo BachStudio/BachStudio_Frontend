@@ -24,6 +24,8 @@ export type Track = {
   icon: string;
   clipClass: string;
   clips: Clip[];
+  muted?: boolean;
+  soloed?: boolean;
   instrumentPresetId: InstrumentPresetId;
   drumKitId: DrumKitId;
   audioSourceId: AudioSourceId;

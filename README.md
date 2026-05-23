@@ -179,13 +179,14 @@ function convertHummingNotesToPianoRollNotes(
 AI 서버 주소는 하드코딩하지 말고 Vite 환경 변수로 받는 것을 권장합니다.
 
 ```text
+VITE_API_BASE_URL=http://localhost:8000/api/v1
 VITE_HUMMING_AI_URL=http://localhost:8000
 ```
 
 사용 예:
 
 ```ts
-const baseUrl = import.meta.env.VITE_HUMMING_AI_URL;
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
 ```
 
 ## 연결 체크리스트

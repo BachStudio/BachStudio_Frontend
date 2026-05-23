@@ -23,6 +23,8 @@ type TimelinePanelProps = {
   onOpenAddTrack: () => void;
   onTrackClick: (trackId: number) => void;
   onTrackDoubleClick: (trackId: number) => void;
+  onToggleTrackMute: (trackId: number) => void;
+  onToggleTrackSolo: (trackId: number) => void;
   onTrackLaneDoubleClick: (event: ReactMouseEvent<HTMLDivElement>, trackId: number) => void;
   onClipMouseDown: (event: ReactMouseEvent<HTMLDivElement>, trackId: number, clip: Clip) => void;
   onClipDoubleClick: (event: ReactMouseEvent<HTMLDivElement>, trackId: number, clipId: number) => void;
@@ -35,6 +37,8 @@ type LoopDragState = {
   initialStartBeat: number;
   initialEndBeat: number;
 };
+
+const TIMELINE_BEAT_WIDTH_PX = 28;
 
 export function TimelinePanel({
   tracks,
@@ -49,6 +53,8 @@ export function TimelinePanel({
   onOpenAddTrack,
   onTrackClick,
   onTrackDoubleClick,
+  onToggleTrackMute,
+  onToggleTrackSolo,
   onTrackLaneDoubleClick,
   onClipMouseDown,
   onClipDoubleClick,
@@ -56,6 +62,9 @@ export function TimelinePanel({
 }: TimelinePanelProps) {
   const [loopDragState, setLoopDragState] = useState<LoopDragState | null>(null);
   const rulerRef = useRef<HTMLDivElement | null>(null);
+  const horizontalScrollRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const isSyncingHorizontalScrollRef = useRef(false);
+  const timelineContentWidth = TIMELINE_TOTAL_BEATS * TIMELINE_BEAT_WIDTH_PX;
   const playheadPercent = Math.max(0, Math.min((playheadBeat / TIMELINE_TOTAL_BEATS) * 100, 100));
   const clampBeat = (value: number) => Math.max(0, Math.min(value, TIMELINE_TOTAL_BEATS));
   const loopSnapBeats = Math.max(CLIP_SNAP_BEATS, 1 / PIANO_STEPS_PER_BEAT);
@@ -97,6 +106,27 @@ export function TimelinePanel({
     }
 
     return `Gain: ${track.busGainDb.toFixed(0)}dB`;
+  };
+
+  const setHorizontalScrollRef = (index: number) => (node: HTMLDivElement | null) => {
+    horizontalScrollRefs.current[index] = node;
+  };
+
+  const syncHorizontalScroll = (source: HTMLDivElement) => {
+    if (isSyncingHorizontalScrollRef.current) {
+      return;
+    }
+
+    isSyncingHorizontalScrollRef.current = true;
+    horizontalScrollRefs.current.forEach((node) => {
+      if (node && node !== source) {
+        node.scrollLeft = source.scrollLeft;
+      }
+    });
+
+    requestAnimationFrame(() => {
+      isSyncingHorizontalScrollRef.current = false;
+    });
   };
 
   const handleRulerClick = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -189,7 +219,17 @@ export function TimelinePanel({
         <div className="w-48 border-r border-outline-variant/20 h-full flex items-center px-4">
           <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Track List</span>
         </div>
-        <div ref={rulerRef} className="flex-1 h-full relative overflow-hidden cursor-pointer" onClick={handleRulerClick}>
+        <div
+          ref={setHorizontalScrollRef(0)}
+          onScroll={(event) => syncHorizontalScroll(event.currentTarget)}
+          className="flex-1 h-full overflow-x-auto overflow-y-hidden no-scrollbar"
+        >
+        <div
+          ref={rulerRef}
+          className="h-full relative cursor-pointer"
+          style={{ width: `${timelineContentWidth}px` }}
+          onClick={handleRulerClick}
+        >
           <div
             className="absolute top-0 left-0 right-0 h-2 bg-black/35 border-b border-white/10"
             onMouseDown={(event) => startLoopDrag(event, 'create')}
@@ -244,6 +284,7 @@ export function TimelinePanel({
             style={{ left: `${playheadPercent}%` }}
           ></div>
         </div>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -254,17 +295,27 @@ export function TimelinePanel({
               className="flex items-center gap-2 text-on-surface-variant hover:text-primary transition-all group"
             >
               <span className="material-symbols-outlined text-lg">add_box</span>
-              <span className="text-[10px] font-bold uppercase tracking-tighter">Add Track</span>
+              <span className="text-[10px] font-bold uppercase tracking-tighter">Add Piano Track</span>
             </button>
           </div>
-          <div className="flex-1 border-b border-outline-variant/5"></div>
+          <div
+            ref={setHorizontalScrollRef(1)}
+            onScroll={(event) => syncHorizontalScroll(event.currentTarget)}
+            className="flex-1 overflow-x-auto overflow-y-hidden no-scrollbar"
+          >
+            <div className="h-full border-b border-outline-variant/5" style={{ width: `${timelineContentWidth}px` }}></div>
+          </div>
         </div>
 
-        {tracks.map((track) => (
-          <div
-            key={track.id}
-            className={`h-28 flex border-b border-outline-variant/5 ${selectedTrackId === track.id ? 'bg-surface-container-high/70' : 'bg-surface-container-low/50'}`}
-          >
+        {tracks.map((track, trackIndex) => {
+          const isMuted = track.muted === true;
+          const isSoloed = track.soloed === true;
+
+          return (
+            <div
+              key={track.id}
+              className={`h-28 flex border-b border-outline-variant/5 ${isMuted ? 'opacity-55' : ''} ${selectedTrackId === track.id ? 'bg-surface-container-high/70' : 'bg-surface-container-low/50'}`}
+            >
             <div
               onClick={() => onTrackClick(track.id)}
               onDoubleClick={() => onTrackDoubleClick(track.id)}
@@ -281,16 +332,42 @@ export function TimelinePanel({
                 )}
               </div>
               <div className="flex gap-1">
-                <div className="w-6 h-4 bg-surface-bright flex items-center justify-center text-[8px] font-bold">M</div>
-                <div className="w-6 h-4 bg-surface-bright flex items-center justify-center text-[8px] font-bold">S</div>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleTrackMute(track.id);
+                  }}
+                  className={`w-6 h-4 flex items-center justify-center text-[8px] font-bold border ${isMuted ? 'bg-[#ff6a5c] text-black border-[#ff9a90]' : 'bg-surface-bright border-transparent hover:border-[#ff6a5c]/50'}`}
+                  title="Mute track"
+                >
+                  M
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleTrackSolo(track.id);
+                  }}
+                  className={`w-6 h-4 flex items-center justify-center text-[8px] font-bold border ${isSoloed ? 'bg-[#66d0ff] text-black border-[#a8e6ff]' : 'bg-surface-bright border-transparent hover:border-[#66d0ff]/50'}`}
+                  title="Solo track"
+                >
+                  S
+                </button>
               </div>
             </div>
 
             <div
+              ref={setHorizontalScrollRef(trackIndex + 2)}
+              onScroll={(event) => syncHorizontalScroll(event.currentTarget)}
+              className="flex-1 overflow-x-auto overflow-y-hidden no-scrollbar"
+            >
+            <div
               data-track-lane="1"
               onClick={() => onTrackClick(track.id)}
               onDoubleClick={(event) => onTrackLaneDoubleClick(event, track.id)}
-              className={`flex-1 relative overflow-hidden ${track.type === 'Bus' ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              className={`relative h-full overflow-hidden ${track.type === 'Bus' ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              style={{ width: `${timelineContentWidth}px` }}
             >
               <div className="absolute inset-0 pointer-events-none">
                 {Array.from({ length: TIMELINE_TOTAL_BARS }, (_, barIndex) => (
@@ -329,7 +406,16 @@ export function TimelinePanel({
                 </div>
               )}
 
-              {track.clips.map((clip) => (
+              {track.clips.map((clip) => {
+                const previewNotes = clip.notes;
+                const previewTotalSteps = Math.max(1, clip.length * PIANO_STEPS_PER_BEAT);
+                const previewPitches = previewNotes.map((note) => note.pitch);
+                const previewMinPitch = previewPitches.length > 0 ? Math.min(...previewPitches) : 0;
+                const previewMaxPitch = previewPitches.length > 0 ? Math.max(...previewPitches) : GRID_TOTAL_ROWS - 1;
+                const previewPitchSpan = Math.max(1, previewMaxPitch - previewMinPitch);
+                const previewBeatLineCount = Math.max(Math.floor(clip.length) - 1, 0);
+
+                return (
                 <div
                   key={clip.id}
                   data-clip="1"
@@ -338,13 +424,13 @@ export function TimelinePanel({
                   onDoubleClick={(event) => onClipDoubleClick(event, track.id, clip.id)}
                   className={`absolute top-3 bottom-3 border ${track.clipClass} backdrop-blur-[1px] overflow-hidden rounded-[2px] cursor-grab active:cursor-grabbing transition-[box-shadow,border-color] ${selectedTimelineClip?.trackId === track.id && selectedTimelineClip.clipId === clip.id ? 'ring-2 ring-primary/80 border-primary/90 z-10' : ''}`}
                   style={{
-                    left: `${(clip.start / TIMELINE_TOTAL_BEATS) * 100}%`,
-                    width: `${Math.max((clip.length / TIMELINE_TOTAL_BEATS) * 100, 1.4)}%`,
+                    left: `${clip.start * TIMELINE_BEAT_WIDTH_PX}px`,
+                    width: `${Math.max(clip.length * TIMELINE_BEAT_WIDTH_PX, 28)}px`,
                   }}
                   title="Drag to move. Double click to edit in piano roll. Press Del to delete selected MIDI clip."
                 >
                   <div className="absolute inset-0 pointer-events-none">
-                    {Array.from({ length: Math.max(clip.length - 1, 0) }, (_, beatIndex) => {
+                    {Array.from({ length: previewBeatLineCount }, (_, beatIndex) => {
                       const beat = beatIndex + 1;
                       const isBarLine = beat % TIMELINE_BEATS_PER_BAR === 0;
                       return (
@@ -368,18 +454,23 @@ export function TimelinePanel({
                     </span>
                   ) : (
                     <div className="absolute inset-0 pointer-events-none">
-                      {clip.notes.slice(0, 64).map((note) => (
+                      {previewNotes.map((note) => {
+                        const normalizedPitch = previewPitchSpan === 1 ? 0.5 : (note.pitch - previewMinPitch) / previewPitchSpan;
+
+                        return (
                         <span
                           key={`clip-note-${clip.id}-${note.id}`}
-                          className="absolute bg-primary/80 rounded-[1px]"
+                          className="absolute bg-primary/85 rounded-[1px] shadow-[0_0_6px_rgba(244,255,198,0.25)]"
                           style={{
-                            left: `${(note.start / Math.max(1, clip.length * PIANO_STEPS_PER_BEAT)) * 100}%`,
-                            width: `${Math.max((note.length / Math.max(1, clip.length * PIANO_STEPS_PER_BEAT)) * 100, 1)}%`,
-                            top: `${Math.min((note.pitch / GRID_TOTAL_ROWS) * 100, 94)}%`,
-                            height: '6%',
+                            left: `${(note.start / previewTotalSteps) * 100}%`,
+                            width: `${Math.max((note.length / previewTotalSteps) * 100, 0.45)}%`,
+                            top: `${22 + normalizedPitch * 58}%`,
+                            height: '4px',
+                            minWidth: '3px',
                           }}
                         ></span>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
 
@@ -390,10 +481,13 @@ export function TimelinePanel({
                     title="Resize clip length"
                   ></span>
                 </div>
-              ))}
+                );
+              })}
             </div>
-          </div>
-        ))}
+            </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="h-48 bg-surface-container-low border-t border-outline-variant/20 flex gap-[2px] p-[2px]">

@@ -1,16 +1,22 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react';
 import {
   GRID_COL_WIDTH,
   GRID_ROW_HEIGHT,
   GRID_TOTAL_ROWS,
+  PIANO_STEPS_PER_BEAT,
 } from './constants';
 import type { Note, PianoRow, PianoTool, SelectionBox } from './types';
+import { getHummingStreamUrl, transcribeHummingAudio } from './fileUtils';
+import type { HummingStreamEvent } from './fileUtils';
 
 type PianoRollOverlayProps = {
   isOpen: boolean;
   activeTrackName: string;
+  bpm: number;
   bpmLabel: string;
+  clipLengthBeats: number;
+  maxRecordingBeats: number;
   pianoTool: PianoTool;
   pianoRows: PianoRow[];
   activeTrackNotes: Note[];
@@ -31,6 +37,8 @@ type PianoRollOverlayProps = {
     forcedMode?: 'move' | 'resize',
   ) => void;
   onDeleteNote: (noteId: number) => void;
+  onStartRealtimeHumming: () => boolean;
+  onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
 };
 
 type HummingWheelNote = {
@@ -48,10 +56,76 @@ const HUMMING_WHEEL_NOTES: HummingWheelNote[] = [
   { label: 'G', angleDeg: 135 },
 ];
 
+const MAX_PENDING_AUDIO_CHUNKS = 120;
+
+const HUMMING_AUDIO_WORKLET = `
+class HummingAudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buffer = new Float32Array(2048);
+    this.offset = 0;
+  }
+
+  process(inputs) {
+    const input = inputs[0] && inputs[0][0];
+    if (!input) {
+      return true;
+    }
+
+    let inputOffset = 0;
+    while (inputOffset < input.length) {
+      const writable = this.buffer.length - this.offset;
+      const readable = input.length - inputOffset;
+      const count = Math.min(writable, readable);
+
+      this.buffer.set(input.subarray(inputOffset, inputOffset + count), this.offset);
+      this.offset += count;
+      inputOffset += count;
+
+      if (this.offset === this.buffer.length) {
+        const chunk = new Float32Array(this.buffer.length);
+        chunk.set(this.buffer);
+        this.port.postMessage(chunk.buffer, [chunk.buffer]);
+        this.offset = 0;
+      }
+    }
+
+    return true;
+  }
+}
+
+registerProcessor('humming-audio-processor', HummingAudioProcessor);
+`;
+
+const createHummingAudioWorkletNode = async (audioContext: AudioContext) => {
+  if (!audioContext.audioWorklet) {
+    throw new Error('AudioWorklet is not supported in this browser.');
+  }
+
+  const moduleUrl = URL.createObjectURL(new Blob([HUMMING_AUDIO_WORKLET], {
+    type: 'application/javascript',
+  }));
+
+  try {
+    await audioContext.audioWorklet.addModule(moduleUrl);
+  } finally {
+    URL.revokeObjectURL(moduleUrl);
+  }
+
+  return new AudioWorkletNode(audioContext, 'humming-audio-processor', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+  });
+};
+
 export function PianoRollOverlay({
   isOpen,
   activeTrackName,
+  bpm,
   bpmLabel,
+  clipLengthBeats,
+  maxRecordingBeats,
   pianoTool,
   pianoRows,
   activeTrackNotes,
@@ -68,9 +142,422 @@ export function PianoRollOverlay({
   onSyncVerticalScroll,
   onNoteMouseDown,
   onDeleteNote,
+  onStartRealtimeHumming,
+  onRealtimeHummingEvent,
 }: PianoRollOverlayProps) {
   const [isHummingPanelOpen, setIsHummingPanelOpen] = useState(false);
-  const activeHummingNote = 'D';
+  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'stopping'>('idle');
+  const [hummingError, setHummingError] = useState('');
+  const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
+  const [detectedNoteLabel, setDetectedNoteLabel] = useState('D3');
+  const [pitchConfidence, setPitchConfidence] = useState<number | null>(null);
+  const [detectedKey, setDetectedKey] = useState('--');
+  const [recordingBeat, setRecordingBeat] = useState(0);
+  const [streamedNoteCount, setStreamedNoteCount] = useState(0);
+  const [streamStatus, setStreamStatus] = useState('Offline');
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<AudioWorkletNode | null>(null);
+  const monitorGainRef = useRef<GainNode | null>(null);
+  const websocketRef = useRef<WebSocket | null>(null);
+  const pendingAudioChunksRef = useRef<ArrayBuffer[]>([]);
+  const recordingStartTimeRef = useRef<number | null>(null);
+  const recordingFrameRef = useRef<number | null>(null);
+  const lastBackendPitchLogRef = useRef(0);
+  const stopFallbackTimerRef = useRef<number | null>(null);
+  const activeHummingNote = detectedNoteLabel.match(/[A-G]/)?.[0] ?? 'D';
+  const activeWheelAngle = HUMMING_WHEEL_NOTES.find((note) => note.label === activeHummingNote)?.angleDeg ?? 330;
+  const wheelRotationDeg = activeWheelAngle - 330;
+  const visibleRecordingLengthBeats = Math.max(clipLengthBeats, recordingBeat + 0.25, 0.25);
+  const recordingProgressPercent = Math.min((recordingBeat / visibleRecordingLengthBeats) * 100, 100);
+  const livePlayheadLeft = recordingState === 'recording' || recordingState === 'stopping'
+    ? Math.min(Math.max(recordingBeat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH, 0), Math.max(gridTotalCols * GRID_COL_WIDTH - 2, 0))
+    : 64;
+
+  const loadMicrophoneDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      return;
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter((device) => device.kind === 'audioinput');
+
+    setMicrophoneDevices(audioInputs);
+    if (!selectedInputDeviceId && audioInputs[0]) {
+      setSelectedInputDeviceId(audioInputs[0].deviceId);
+    }
+  };
+
+  const stopRecordingClock = () => {
+    if (recordingFrameRef.current !== null) {
+      window.cancelAnimationFrame(recordingFrameRef.current);
+      recordingFrameRef.current = null;
+    }
+    recordingStartTimeRef.current = null;
+  };
+
+  const startRecordingClock = () => {
+    stopRecordingClock();
+    recordingStartTimeRef.current = performance.now();
+
+    const tick = () => {
+      if (recordingStartTimeRef.current === null) {
+        return;
+      }
+
+      const elapsedSeconds = (performance.now() - recordingStartTimeRef.current) / 1000;
+      const elapsedBeats = Math.min(elapsedSeconds * (bpm / 60), maxRecordingBeats);
+      setRecordingBeat((beat) => Math.max(beat, elapsedBeats));
+      recordingFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    recordingFrameRef.current = window.requestAnimationFrame(tick);
+  };
+
+  const stopAudioCapture = () => {
+    if (stopFallbackTimerRef.current !== null) {
+      window.clearTimeout(stopFallbackTimerRef.current);
+      stopFallbackTimerRef.current = null;
+    }
+    stopRecordingClock();
+    pendingAudioChunksRef.current = [];
+
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.port.onmessage = null;
+      audioProcessorRef.current.port.close();
+      audioProcessorRef.current.disconnect();
+    }
+    audioSourceRef.current?.disconnect();
+    monitorGainRef.current?.disconnect();
+    audioProcessorRef.current = null;
+    audioSourceRef.current = null;
+    monitorGainRef.current = null;
+
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      void audioContextRef.current.close();
+    }
+    audioContextRef.current = null;
+
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const closeRealtimeSocket = () => {
+    const socket = websocketRef.current;
+    websocketRef.current = null;
+    pendingAudioChunksRef.current = [];
+    if (!socket) {
+      return;
+    }
+
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  };
+
+  const stopRealtimeHummingRecording = () => {
+    setRecordingState('stopping');
+    setStreamStatus('Stopping');
+    stopAudioCapture();
+
+    const socket = websocketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'stop' }));
+      stopFallbackTimerRef.current = window.setTimeout(() => {
+        closeRealtimeSocket();
+        setRecordingState('idle');
+        setStreamStatus('Offline');
+      }, 1200);
+      return;
+    }
+
+    closeRealtimeSocket();
+    setRecordingState('idle');
+    setStreamStatus('Offline');
+  };
+
+  const handleStreamEvent = (event: HummingStreamEvent) => {
+    if (event.type === 'ready') {
+      setStreamStatus(event.source.toUpperCase());
+      console.info('[Humming] backend ready', {
+        liveSource: event.source,
+        sourceSampleRate: event.sourceSampleRate,
+        analysisSampleRate: event.analysisSampleRate,
+        bpm: event.bpm,
+        clipLengthBeats: event.clipLengthBeats,
+      });
+      return;
+    }
+
+    if (event.type === 'pitch') {
+      setRecordingBeat((beat) => Math.max(beat, event.beat, 0));
+      setPitchConfidence(event.confidence);
+      if (event.voiced && event.note) {
+        setDetectedNoteLabel(event.note);
+      }
+      if (event.timestampMs - lastBackendPitchLogRef.current > 1000 || lastBackendPitchLogRef.current === 0) {
+        lastBackendPitchLogRef.current = event.timestampMs;
+        console.debug('[Humming] backend pitch', {
+          source: event.source,
+          voiced: event.voiced,
+          note: event.note,
+          f0Hz: event.f0Hz,
+          confidence: event.confidence,
+          rms: event.rms,
+          beat: event.beat,
+        });
+      }
+      onRealtimeHummingEvent(event);
+      return;
+    }
+
+    if (event.type === 'note_on' || event.type === 'note_update' || event.type === 'note_off') {
+      setDetectedNoteLabel(event.note.note);
+      setPitchConfidence(event.note.confidence);
+      setRecordingBeat((beat) => Math.max(beat, event.note.startBeat + event.note.durationBeats, 0));
+      if (event.type === 'note_on') {
+        setStreamedNoteCount((count) => count + 1);
+      }
+      onRealtimeHummingEvent(event);
+      return;
+    }
+
+    if (event.type === 'complete') {
+      setDetectedKey(event.key);
+      setStreamedNoteCount(event.notes.length);
+      console.info('[Humming] complete', {
+        liveSource: event.liveSource,
+        finalSource: event.source,
+        finalNotes: event.notes.length,
+        liveNotes: event.liveNotes?.length ?? 0,
+        key: event.key,
+      });
+      onRealtimeHummingEvent(event);
+      closeRealtimeSocket();
+      stopAudioCapture();
+      setRecordingState('idle');
+      setStreamStatus('Offline');
+      return;
+    }
+
+    if (event.type === 'error') {
+      setHummingError(event.message);
+      console.error('[Humming] backend error', event.message);
+    }
+  };
+
+  const startHummingRecording = async () => {
+    if (!onStartRealtimeHumming()) {
+      return;
+    }
+
+    setHummingError('');
+    setDetectedKey('--');
+    setDetectedNoteLabel('D3');
+    setPitchConfidence(null);
+    setRecordingBeat(0);
+    setStreamedNoteCount(0);
+    lastBackendPitchLogRef.current = 0;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setHummingError('Microphone recording is not supported in this browser.');
+      return;
+    }
+
+    setRecordingState('recording');
+    setStreamStatus('Preparing');
+    startRecordingClock();
+    console.info('[Humming] record start', {
+      mode: 'backend_rmvpe',
+      bpm,
+      maxRecordingBeats,
+    });
+
+    try {
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      const streamUrl = getHummingStreamUrl({
+        sampleRate: audioContext.sampleRate,
+        bpm,
+        clipLengthBeats: maxRecordingBeats,
+        quantize: '1/16',
+      });
+      console.info('[Humming] websocket open', streamUrl);
+      const socket = new WebSocket(streamUrl);
+      socket.binaryType = 'arraybuffer';
+      websocketRef.current = socket;
+
+      socket.onopen = () => {
+        pendingAudioChunksRef.current.forEach((chunk) => socket.send(chunk));
+        pendingAudioChunksRef.current = [];
+        setStreamStatus('Streaming');
+      };
+
+      socket.onmessage = (message) => {
+        if (typeof message.data !== 'string') {
+          return;
+        }
+        handleStreamEvent(JSON.parse(message.data) as HummingStreamEvent);
+      };
+
+      socket.onerror = () => {
+        setHummingError('Humming AI stream failed. Check backend server.');
+        console.error('[Humming] websocket error');
+        stopAudioCapture();
+        setRecordingState('idle');
+        setStreamStatus('Offline');
+      };
+
+      socket.onclose = () => {
+        console.info('[Humming] websocket closed');
+        stopAudioCapture();
+        setRecordingState('idle');
+        setStreamStatus('Offline');
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: selectedInputDeviceId ? { deviceId: { exact: selectedInputDeviceId } } : true,
+      });
+      mediaStreamRef.current = stream;
+
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = await createHummingAudioWorkletNode(audioContext);
+      const monitorGain = audioContext.createGain();
+
+      monitorGain.gain.value = 0;
+
+      processor.port.onmessage = (event) => {
+        if (!(event.data instanceof ArrayBuffer)) {
+          return;
+        }
+
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(event.data);
+        } else if (socket.readyState === WebSocket.CONNECTING) {
+          pendingAudioChunksRef.current.push(event.data);
+          if (pendingAudioChunksRef.current.length > MAX_PENDING_AUDIO_CHUNKS) {
+            pendingAudioChunksRef.current.shift();
+          }
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(monitorGain);
+      monitorGain.connect(audioContext.destination);
+
+      audioSourceRef.current = source;
+      audioProcessorRef.current = processor;
+      monitorGainRef.current = monitorGain;
+
+      await loadMicrophoneDevices();
+    } catch (error) {
+      stopAudioCapture();
+      closeRealtimeSocket();
+      setRecordingState('idle');
+      setStreamStatus('Offline');
+      setHummingError(error instanceof Error ? error.message : 'Recording failed.');
+    }
+  };
+
+  const handleAudioFileUpload = async (file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    if (!onStartRealtimeHumming()) {
+      return;
+    }
+
+    setIsUploadingAudio(true);
+    setHummingError('');
+    setDetectedKey('--');
+    setPitchConfidence(null);
+    setStreamedNoteCount(0);
+    setStreamStatus('Uploading');
+
+    try {
+      console.info('[Humming] file upload start', {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      });
+      const result = await transcribeHummingAudio(file, bpm, maxRecordingBeats, '1/16');
+      setDetectedKey(result.key);
+      setStreamedNoteCount(result.notes.length);
+      setStreamStatus('File Result');
+      console.info('[Humming] file upload complete', {
+        key: result.key,
+        notes: result.notes.length,
+      });
+      onRealtimeHummingEvent({
+        type: 'complete',
+        key: result.key,
+        notes: result.notes,
+        source: 'backend_file',
+        liveSource: 'file_upload',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Audio file transcription failed.';
+      setHummingError(message);
+      setStreamStatus('Offline');
+      console.error('[Humming] file upload failed', message);
+    } finally {
+      setIsUploadingAudio(false);
+      if (audioFileInputRef.current) {
+        audioFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      closeRealtimeSocket();
+      stopAudioCapture();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isHummingPanelOpen) {
+      void loadMicrophoneDevices();
+    }
+  }, [isHummingPanelOpen]);
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) {
+      return;
+    }
+
+    const handleDeviceChange = () => {
+      void loadMicrophoneDevices();
+    };
+
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+    };
+  }, [selectedInputDeviceId]);
+
+  useEffect(() => {
+    if (recordingState !== 'recording' || !gridRef.current) {
+      return;
+    }
+
+    const grid = gridRef.current;
+    const targetLeft = livePlayheadLeft - grid.clientWidth * 0.58;
+    grid.scrollLeft = Math.max(0, targetLeft);
+  }, [livePlayheadLeft, recordingState, gridRef]);
 
   const getWheelPointStyle = (angleDeg: number, radiusPercent: number) => {
     const radian = (angleDeg * Math.PI) / 180;
@@ -206,7 +693,10 @@ export function PianoRollOverlay({
                       ></div>
                     ))}
                   </div>
-                  <div className="absolute top-0 bottom-0 left-64 w-[2px] bg-primary z-30 shadow-[0_0_10px_rgba(244,255,198,0.5)]"></div>
+                  <div
+                    className="absolute top-0 bottom-0 w-[2px] bg-primary z-30 shadow-[0_0_10px_rgba(244,255,198,0.5)] transition-[left] duration-150 ease-linear"
+                    style={{ left: `${livePlayheadLeft}px` }}
+                  ></div>
 
                   {activeTrackNotes.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
@@ -268,7 +758,7 @@ export function PianoRollOverlay({
             <aside
               className={`absolute top-0 right-0 h-full w-[360px] border-l border-white/10 bg-[#14171d]/95 backdrop-blur-md shadow-[-24px_0_40px_rgba(0,0,0,0.45)] transition-transform duration-300 ease-out ${isHummingPanelOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full pointer-events-none'}`}
             >
-              <div className="h-full flex flex-col px-5 py-4 gap-4">
+              <div className="h-full flex flex-col px-5 py-4 gap-4 overflow-y-auto">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-[#ff9ba4]">graphic_eq</span>
@@ -284,10 +774,30 @@ export function PianoRollOverlay({
                   </button>
                 </div>
 
+                <label className="flex flex-col gap-1">
+                  <span className="text-[8px] font-bold uppercase tracking-widest text-zinc-500">Input Device</span>
+                  <select
+                    value={selectedInputDeviceId}
+                    onChange={(event) => setSelectedInputDeviceId(event.target.value)}
+                    disabled={recordingState !== 'idle'}
+                    className="h-9 bg-[#191c23] border border-white/10 text-[10px] font-mono uppercase tracking-wider text-[#f3f5fb] px-2 outline-none focus:border-[#ff9ba4]/70 disabled:opacity-50"
+                  >
+                    {microphoneDevices.length === 0 ? (
+                      <option value="">Default Microphone</option>
+                    ) : (
+                      microphoneDevices.map((device, index) => (
+                        <option key={device.deviceId || `mic-${index}`} value={device.deviceId}>
+                          {device.label || `Microphone ${index + 1}`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
                 <div className="rounded-md border border-white/10 bg-[#191c23] p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Realtime Pitch Wheel</span>
-                    <span className="text-[10px] font-mono text-[#ff9ba4]">D3</span>
+                    <span className="text-[10px] font-mono text-[#ff9ba4]">{detectedNoteLabel}</span>
                   </div>
 
                   <div className="mt-3 mx-auto relative h-[260px] w-[260px]">
@@ -302,13 +812,21 @@ export function PianoRollOverlay({
                       <circle cx="130" cy="130" r="50" fill="#1a1f27" />
                       <circle cx="130" cy="130" r="50" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
 
-                      <path d="M130 130 L219 55 A116 116 0 0 1 245 114 Z" fill="rgba(255, 162, 171, 0.96)" />
-                      <path d="M130 130 L198 74 A86 86 0 0 1 215 118 Z" fill="rgba(255, 162, 171, 0.6)" />
-                      <path d="M130 130 L174 92 A58 58 0 0 1 187 123 Z" fill="rgba(255, 162, 171, 0.38)" />
+                      <g
+                        style={{
+                          transform: `rotate(${wheelRotationDeg}deg)`,
+                          transformOrigin: '130px 130px',
+                          transition: 'transform 180ms ease-out',
+                        }}
+                      >
+                        <path d="M130 130 L219 55 A116 116 0 0 1 245 114 Z" fill="rgba(255, 162, 171, 0.96)" />
+                        <path d="M130 130 L198 74 A86 86 0 0 1 215 118 Z" fill="rgba(255, 162, 171, 0.6)" />
+                        <path d="M130 130 L174 92 A58 58 0 0 1 187 123 Z" fill="rgba(255, 162, 171, 0.38)" />
+                      </g>
 
                       <circle cx="130" cy="130" r="28" fill="#11161f" />
                       <circle cx="130" cy="130" r="28" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
-                      <text x="130" y="142" textAnchor="middle" className="fill-[#ff8f99] text-[18px] font-black tracking-tight">D3</text>
+                      <text x="130" y="142" textAnchor="middle" className="fill-[#ff8f99] text-[18px] font-black tracking-tight">{detectedNoteLabel}</text>
                     </svg>
 
                     {HUMMING_WHEEL_NOTES.map((note) => (
@@ -326,27 +844,69 @@ export function PianoRollOverlay({
                 <div className="grid grid-cols-2 gap-2 text-[10px]">
                   <div className="rounded-sm border border-white/10 bg-[#1a1e26] p-3">
                     <span className="block text-[8px] font-bold uppercase tracking-widest text-zinc-500">Pitch Stability</span>
-                    <span className="mt-1 block font-mono text-[#ffb4bb]">88%</span>
+                    <span className="mt-1 block font-mono text-[#ffb4bb]">
+                      {pitchConfidence !== null ? `${Math.round(pitchConfidence * 100)}%` : '--'}
+                    </span>
                   </div>
                   <div className="rounded-sm border border-white/10 bg-[#1a1e26] p-3">
                     <span className="block text-[8px] font-bold uppercase tracking-widest text-zinc-500">Detected Key</span>
-                    <span className="mt-1 block font-mono text-[#ffb4bb]">D Minor</span>
+                    <span className="mt-1 block font-mono text-[#ffb4bb]">{detectedKey}</span>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-2">
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Input Sensitivity</span>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Capture Status</span>
                   <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                    <div className="h-full w-[72%] bg-[#ff9ba4]"></div>
+                    <div
+                      className="h-full bg-[#ff9ba4] transition-all"
+                      style={{
+                        width: recordingState === 'idle' ? '4%' : `${Math.max(recordingProgressPercent, 4)}%`,
+                      }}
+                    ></div>
+                  </div>
+                  <div className="flex justify-between text-[9px] font-mono uppercase tracking-widest text-zinc-500">
+                    <span>{streamStatus}</span>
+                    <span>{streamedNoteCount} notes</span>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  className="mt-auto h-10 border border-[#ff9ba4]/60 text-[#ffb4bb] font-black text-[10px] uppercase tracking-[0.18em] bg-[#22171a] hover:bg-[#2c1a20] transition-colors"
-                >
-                  Convert Humming To MIDI
-                </button>
+                {hummingError && (
+                  <div className="rounded-sm border border-red-400/30 bg-red-500/10 px-3 py-2 text-[9px] font-mono uppercase tracking-widest text-red-200">
+                    {hummingError}
+                  </div>
+                )}
+
+                <div className="mt-auto">
+                  <input
+                    ref={audioFileInputRef}
+                    type="file"
+                    accept="audio/*,.wav,.mp3,.webm,.m4a,.ogg,.flac"
+                    className="hidden"
+                    onChange={(event) => {
+                      void handleAudioFileUpload(event.target.files?.[0] ?? null);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => audioFileInputRef.current?.click()}
+                    disabled={recordingState !== 'idle' || isUploadingAudio}
+                    className="mb-2 h-10 border border-white/15 bg-[#17191d] text-[#f3f5fb] font-black text-[10px] uppercase tracking-[0.14em] transition-colors hover:border-[#ff9ba4]/70 hover:text-[#ffb2ba] disabled:opacity-40 disabled:cursor-not-allowed w-full"
+                  >
+                    {isUploadingAudio ? 'Analyzing File' : 'Test Audio File'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={recordingState === 'idle' ? startHummingRecording : stopRealtimeHummingRecording}
+                    disabled={recordingState === 'stopping' || isUploadingAudio}
+                    className={`h-10 border font-black text-[10px] uppercase tracking-[0.14em] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      recordingState === 'recording'
+                        ? 'border-red-300/70 bg-red-500/20 text-red-100'
+                        : 'border-white/15 bg-[#17191d] text-[#f3f5fb] hover:border-[#ff9ba4]/70 hover:text-[#ffb2ba]'
+                    } w-full`}
+                  >
+                    {recordingState === 'recording' ? 'Stop' : recordingState === 'stopping' ? 'Stopping' : 'Record'}
+                  </button>
+                </div>
               </div>
             </aside>
           </div>

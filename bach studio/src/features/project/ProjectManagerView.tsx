@@ -1,11 +1,35 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { deleteProject, formatDate, getAllProjects } from '../editor/fileUtils';
+import {
+  deleteProject,
+  deleteProjectFromBackend,
+  formatDate,
+  getAllBackendProjects,
+  getAllProjects,
+  loadProject,
+  loadProjectFromBackend,
+  saveProject,
+  type ProjectData,
+} from '../editor/fileUtils';
+
+const mergeProjects = (localProjects: ProjectData[], backendProjects: ProjectData[]) => {
+  const projectMap = new Map<string, ProjectData>();
+
+  [...localProjects, ...backendProjects].forEach((project) => {
+    const existingProject = projectMap.get(project.projectName);
+    if (!existingProject || project.timestamp >= existingProject.timestamp) {
+      projectMap.set(project.projectName, project);
+    }
+  });
+
+  return Array.from(projectMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+};
 
 export function ProjectManagerView() {
   const navigate = useNavigate();
   const [searchText, setSearchText] = useState('');
   const [projects, setProjects] = useState(() => getAllProjects());
+  const [storageLabel, setStorageLabel] = useState('Local');
 
   const filteredProjects = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
@@ -22,21 +46,34 @@ export function ProjectManagerView() {
     });
   }, [projects, searchText]);
 
-  const refreshProjects = () => {
-    setProjects(getAllProjects());
+  const refreshProjects = async () => {
+    const localProjects = getAllProjects();
+    const backendProjects = await getAllBackendProjects();
+    setProjects(mergeProjects(localProjects, backendProjects));
+    setStorageLabel(backendProjects.length > 0 ? 'Backend + Local' : 'Local');
   };
 
-  const handleDelete = (projectName: string) => {
+  useEffect(() => {
+    void refreshProjects();
+  }, []);
+
+  const handleDelete = async (projectName: string) => {
     const isConfirmed = window.confirm(`Delete "${projectName}"?`);
     if (!isConfirmed) {
       return;
     }
 
     deleteProject(projectName);
-    refreshProjects();
+    await deleteProjectFromBackend(projectName);
+    await refreshProjects();
   };
 
-  const handleLoad = (projectName: string, bpm: number) => {
+  const handleLoad = async (projectName: string, bpm: number) => {
+    const project = loadProject(projectName) ?? await loadProjectFromBackend(projectName);
+    if (project) {
+      saveProject(project.projectName, project.tracks, project.bpm);
+    }
+
     navigate(`/editor?projectName=${encodeURIComponent(projectName)}&bpm=${encodeURIComponent(String(bpm))}`);
   };
 
@@ -55,14 +92,6 @@ export function ProjectManagerView() {
             </button>
             <span className="text-lg font-black tracking-tighter text-[#f4ffc6] uppercase cursor-pointer" onClick={() => navigate('/')}>Bach Studio</span>
           </div>
-
-          <nav className="hidden md:flex gap-6">
-            <span className="text-[#f4ffc6] border-b-2 border-[#f4ffc6] pb-1 cursor-default">File</span>
-            <span className="text-zinc-500">Edit</span>
-            <span className="text-zinc-500">Track</span>
-            <span className="text-zinc-500">Mix</span>
-            <span className="text-zinc-500">View</span>
-          </nav>
         </div>
 
         <div className="flex items-center gap-4">
@@ -99,7 +128,12 @@ export function ProjectManagerView() {
           </div>
 
           <div className="relative z-20 ml-auto hidden lg:flex items-center gap-4">
-            <button className="ghost-border text-white hover:bg-surface-bright px-5 py-3 uppercase text-xs font-bold transition-colors">
+            <button
+              onClick={() => {
+                void refreshProjects();
+              }}
+              className="ghost-border text-white hover:bg-surface-bright px-5 py-3 uppercase text-xs font-bold transition-colors"
+            >
               Refresh
             </button>
             <button
@@ -161,7 +195,7 @@ export function ProjectManagerView() {
                       {project.projectName}
                     </h3>
                     <span className="mono text-[10px] text-primary bg-primary/10 px-2 py-0.5 whitespace-nowrap uppercase">
-                      Local Save
+                      Saved Project
                     </span>
                   </div>
 
@@ -182,7 +216,7 @@ export function ProjectManagerView() {
 
                   <div className="mt-auto flex items-center justify-between text-[10px] text-zinc-500 uppercase font-bold mono pt-4 border-t border-outline/10">
                     <span>Status: <span className="text-primary">Saved</span></span>
-                    <span>Local Storage</span>
+                    <span>{storageLabel}</span>
                   </div>
 
                   <div className="mt-5 flex gap-2">
@@ -220,7 +254,7 @@ export function ProjectManagerView() {
       <footer className="bg-[#0e0e0e] text-zinc-500 font-mono text-[9px] uppercase tracking-tighter fixed bottom-0 w-full flex justify-between items-center px-4 h-6 border-t border-[#484847]/20 z-50">
         <div>Bach Studio Engine v2.4 | Projects: {projects.length}</div>
         <div className="flex gap-4">
-          <span className="hover:text-white cursor-default">Storage: Local</span>
+          <span className="hover:text-white cursor-default">Storage: {storageLabel}</span>
           <span className="hover:text-white cursor-default">44.1kHz</span>
           <span className="text-[#f4ffc6]">24-bit</span>
         </div>
