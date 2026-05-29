@@ -4,9 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import lamejs from 'lamejs';
 import * as Tone from 'tone';
 import {
-  loadProject,
   loadProjectFromBackend,
-  saveProject,
   saveProjectToBackend,
 } from './fileUtils';
 import type { HummingAiNote, HummingStreamEvent } from './fileUtils';
@@ -33,6 +31,7 @@ import {
 } from './constants';
 import { PianoRollOverlay } from './PianoRollOverlay';
 import { TimelinePanel } from './TimelinePanel';
+import { HeaderUtilityButtons } from '../ui/HeaderUtilityButtons';
 import type {
   AudioSourceId,
   Clip,
@@ -67,6 +66,9 @@ type SelectedTimelineClip = {
 
 type ExportFormat = 'wav' | 'mp3';
 const MAX_REALTIME_HUMMING_BEATS = TIMELINE_TOTAL_BEATS;
+const PLAYBACK_TIMER_MS = 20;
+const PLAYHEAD_UI_UPDATE_MS = 33;
+const HUMMING_NOTE_UPDATE_MS = 160;
 
 export function MainEditor() {
   const [searchParams] = useSearchParams();
@@ -113,6 +115,7 @@ export function MainEditor() {
   const originalBpmRef = useRef<number>(128);
   const navigate = useNavigate();
   const samplerRef = useRef<Tone.Sampler | null>(null);
+  const samplerLoadPromiseRef = useRef<Promise<void> | null>(null);
   const analogSynthRef = useRef<Tone.PolySynth | null>(null);
   const organSynthRef = useRef<Tone.PolySynth | null>(null);
   const bassSynthRef = useRef<Tone.MonoSynth | null>(null);
@@ -122,8 +125,11 @@ export function MainEditor() {
   const clapSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const audioPlayersRef = useRef<Partial<Record<AudioSourceId, Tone.Player>>>({});
   const playbackTimerRef = useRef<number | null>(null);
+  const lastPlayheadUiUpdateRef = useRef(0);
   const liveHummingNoteIdRef = useRef<number | null>(null);
   const liveHummingNoteIdsRef = useRef<number[]>([]);
+  const lastRealtimeNoteUpdateRef = useRef(0);
+  const realtimeClipLengthRef = useRef(CLIP_DEFAULT_LENGTH_BEATS);
   const playbackSessionRef = useRef<null | {
     startWallTime: number;
     startBeat: number;
@@ -230,9 +236,7 @@ export function MainEditor() {
     await Tone.start();
   };
 
-  const ensurePianoSampler = async () => {
-    await ensureToneReady();
-
+  const createPianoSampler = () => {
     if (!samplerRef.current) {
       samplerRef.current = new Tone.Sampler({
         urls: {
@@ -270,9 +274,18 @@ export function MainEditor() {
         release: 1,
         baseUrl: 'https://tonejs.github.io/audio/salamander/',
       }).toDestination();
-      await Tone.loaded();
+      samplerLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Piano sample preload failed:', error);
+      });
     }
 
+    return samplerRef.current;
+  };
+
+  const ensurePianoSampler = async () => {
+    await ensureToneReady();
+    createPianoSampler();
+    await samplerLoadPromiseRef.current;
     return samplerRef.current;
   };
 
@@ -382,31 +395,20 @@ export function MainEditor() {
     const hasDrumTrack = tracks.some((track) => track.type === 'Drums');
     const audioSources = new Set(tracks.filter((track) => track.type === 'Audio').map((track) => track.audioSourceId));
 
-    if (instrumentPresets.has('piano')) {
-      await ensurePianoSampler();
-    }
-    if (instrumentPresets.has('analog')) {
-      await ensureAnalogSynth();
-    }
-    if (instrumentPresets.has('organ')) {
-      await ensureOrganSynth();
-    }
-    if (instrumentPresets.has('bass')) {
-      await ensureBassSynth();
-    }
-    if (hasDrumTrack) {
-      await ensureDrumSynths();
-    }
-
-    await Promise.all(
-      Array.from(audioSources).map(async (sourceId) => {
+    await Promise.all([
+      instrumentPresets.has('piano') ? ensurePianoSampler() : Promise.resolve(),
+      instrumentPresets.has('analog') ? ensureAnalogSynth() : Promise.resolve(),
+      instrumentPresets.has('organ') ? ensureOrganSynth() : Promise.resolve(),
+      instrumentPresets.has('bass') ? ensureBassSynth() : Promise.resolve(),
+      hasDrumTrack ? ensureDrumSynths() : Promise.resolve(),
+      ...Array.from(audioSources).map(async (sourceId) => {
         try {
           await ensureAudioPlayer(sourceId);
         } catch {
           // Keep playback alive even if a remote one-shot failed to load.
         }
       }),
-    );
+    ]);
   };
 
   const applyDrumKitTweaks = (kitId: Track['drumKitId']) => {
@@ -627,7 +629,12 @@ export function MainEditor() {
     const loopEndBeat = clamp(loopRange.endBeat, loopStartBeat + minLoopLength, TIMELINE_TOTAL_BEATS);
     const playbackEndBeat = isLoopPlaybackOn ? loopEndBeat : TIMELINE_TOTAL_BEATS;
     const currentBeat = getCurrentSessionBeat();
-    setPlayheadBeat(currentBeat);
+    const now = performance.now();
+
+    if (now - lastPlayheadUiUpdateRef.current >= PLAYHEAD_UI_UPDATE_MS) {
+      lastPlayheadUiUpdateRef.current = now;
+      setPlayheadBeat(currentBeat);
+    }
 
     while (session.nextEventIndex < session.events.length && session.events[session.nextEventIndex].startBeat <= currentBeat + 0.0001) {
       const event = session.events[session.nextEventIndex];
@@ -639,10 +646,11 @@ export function MainEditor() {
       const nextEventIndex = session.events.findIndex((event) => event.startBeat >= loopStartBeat - 0.0001);
       playbackSessionRef.current = {
         ...session,
-        startWallTime: performance.now(),
+        startWallTime: now,
         startBeat: loopStartBeat,
         nextEventIndex: nextEventIndex === -1 ? session.events.length : nextEventIndex,
       };
+      lastPlayheadUiUpdateRef.current = now;
       setPlayheadBeat(loopStartBeat);
       return;
     }
@@ -661,6 +669,7 @@ export function MainEditor() {
     const loopStartBeat = clamp(loopRange.startBeat, 0, TIMELINE_TOTAL_BEATS - minLoopLength);
     const loopEndBeat = clamp(loopRange.endBeat, loopStartBeat + minLoopLength, TIMELINE_TOTAL_BEATS);
     const start = clamp(startBeat, isLoopPlaybackOn ? loopStartBeat : 0, isLoopPlaybackOn ? loopEndBeat : TIMELINE_TOTAL_BEATS);
+    lastPlayheadUiUpdateRef.current = performance.now();
     setPlayheadBeat(start);
     setIsPlaying(true);
 
@@ -683,7 +692,7 @@ export function MainEditor() {
     };
 
     cancelPlaybackTimer();
-    playbackTimerRef.current = window.setInterval(runPlaybackFrame, 16);
+    playbackTimerRef.current = window.setInterval(runPlaybackFrame, PLAYBACK_TIMER_MS);
     runPlaybackFrame();
   };
 
@@ -874,19 +883,18 @@ export function MainEditor() {
   };
 
   const handleSaveProject = async () => {
-    const localSuccess = saveProject(projectName, tracks, bpm);
     const backendSuccess = await saveProjectToBackend(projectName, tracks, bpm);
 
-    if (localSuccess || backendSuccess) {
+    if (backendSuccess) {
       originalTracksRef.current = JSON.parse(JSON.stringify(tracks));
       originalBpmRef.current = bpm;
       setIsModified(false);
       setSaveNotification({
-        message: backendSuccess ? `Saved: ${projectName}` : `Saved locally: ${projectName}`,
+        message: `Saved online: ${projectName}`,
         visible: true,
       });
     } else {
-      setSaveNotification({ message: 'Save failed', visible: true });
+      setSaveNotification({ message: 'Online save failed', visible: true });
     }
 
     setTimeout(() => {
@@ -1259,34 +1267,36 @@ export function MainEditor() {
       setIsModified(false);
     };
 
-    const loadedProject = loadProject(projectName);
-    if (loadedProject) {
-      applyProject(loadedProject);
-      return () => {
-        isCancelled = true;
-      };
-    }
-
-    if (!projectName.startsWith('SESSION_')) {
-      void loadProjectFromBackend(projectName).then((backendProject) => {
-        if (backendProject) {
-          applyProject(backendProject);
-        }
-      });
-    }
+    void loadProjectFromBackend(projectName).then((backendProject) => {
+      if (backendProject) {
+        applyProject(backendProject);
+      }
+    });
 
     return () => {
       isCancelled = true;
     };
   }, [projectName]);
 
+  useEffect(() => {
+    if (tracks.some((track) => track.type === 'Instrument' && track.instrumentPresetId === 'piano')) {
+      createPianoSampler();
+    }
+  }, [tracks]);
+
   // 변경 감지: tracks나 bpm이 원본과 다르면 isModified = true
   useEffect(() => {
+    if (isModified) {
+      return;
+    }
+
     const hasChanges =
       JSON.stringify(tracks) !== JSON.stringify(originalTracksRef.current) ||
       bpm !== originalBpmRef.current;
-    setIsModified(hasChanges);
-  }, [tracks, bpm]);
+    if (hasChanges) {
+      setIsModified(true);
+    }
+  }, [tracks, bpm, isModified]);
 
   // 페이지 떠나기 전에 경고 (뒤로가기, 새 페이지로 이동)
   useEffect(() => {
@@ -1370,6 +1380,7 @@ export function MainEditor() {
       clapSynthRef.current?.dispose();
       Object.values(audioPlayersRef.current).forEach((player) => player?.dispose());
       samplerRef.current = null;
+      samplerLoadPromiseRef.current = null;
       analogSynthRef.current = null;
       organSynthRef.current = null;
       bassSynthRef.current = null;
@@ -1520,10 +1531,12 @@ export function MainEditor() {
       return CLIP_DEFAULT_LENGTH_BEATS;
     }
 
-    const snappedLength = Math.ceil(Math.max(targetBeat, activeClip.length, CLIP_SNAP_BEATS) / CLIP_SNAP_BEATS) * CLIP_SNAP_BEATS;
-    const nextLength = clamp(snappedLength, activeClip.length, MAX_REALTIME_HUMMING_BEATS);
+    const currentLength = Math.max(realtimeClipLengthRef.current, activeClip.length);
+    const snappedLength = Math.ceil(Math.max(targetBeat, currentLength, CLIP_SNAP_BEATS) / CLIP_SNAP_BEATS) * CLIP_SNAP_BEATS;
+    const nextLength = clamp(snappedLength, currentLength, MAX_REALTIME_HUMMING_BEATS);
 
-    if (nextLength > activeClip.length) {
+    if (nextLength > currentLength) {
+      realtimeClipLengthRef.current = nextLength;
       updateTrackClips(activeTrack.id, (clips) =>
         clips.map((clip) => (clip.id === activeClip.id ? { ...clip, length: Math.max(clip.length, nextLength) } : clip)),
       );
@@ -1540,6 +1553,8 @@ export function MainEditor() {
 
     liveHummingNoteIdRef.current = null;
     liveHummingNoteIdsRef.current = [];
+    lastRealtimeNoteUpdateRef.current = 0;
+    realtimeClipLengthRef.current = activeClip.length;
     setSelectedNoteIds([]);
     return true;
   };
@@ -1571,10 +1586,15 @@ export function MainEditor() {
     }
 
     if (event.type !== 'note_on' && event.type !== 'note_update' && event.type !== 'note_off') {
-      if (event.type === 'pitch') {
-        extendActiveClipForRealtimeBeat(event.beat + CLIP_SNAP_BEATS);
-      }
       return;
+    }
+
+    if (event.type === 'note_update') {
+      const now = performance.now();
+      if (now - lastRealtimeNoteUpdateRef.current < HUMMING_NOTE_UPDATE_MS) {
+        return;
+      }
+      lastRealtimeNoteUpdateRef.current = now;
     }
 
     const noteEndBeat = event.note.startBeat + event.note.durationBeats + CLIP_SNAP_BEATS;
@@ -1594,7 +1614,6 @@ export function MainEditor() {
     updateActiveClipNotes((notes) =>
       notes.map((note) => (note.id === noteId ? { ...note, ...convertedNote } : note)),
     );
-    setSelectedNoteIds([noteId]);
 
     if (event.type === 'note_off') {
       liveHummingNoteIdRef.current = null;
@@ -2247,8 +2266,7 @@ export function MainEditor() {
         </div>
 
         <div className="flex items-center gap-4">
-          <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">help</span></button>
-          <button className="hover:bg-[#2c2c2c] transition-colors p-1 text-zinc-500"><span className="material-symbols-outlined">settings</span></button>
+          <HeaderUtilityButtons buttonClassName="h-8 w-8 flex items-center justify-center hover:bg-[#2c2c2c] transition-colors text-zinc-500 hover:text-primary" />
           <div className="relative">
             <button
               onClick={() => setIsExportMenuOpen((prev) => !prev)}

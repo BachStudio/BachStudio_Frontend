@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getAllProjects, deleteProject, formatDate, type ProjectData } from './fileUtils';
+import { deleteProjectFromBackend, formatDate, getAllBackendProjects, type ProjectData } from './fileUtils';
 
 interface ProjectBrowserModalProps {
   isOpen: boolean;
@@ -14,20 +14,23 @@ export function ProjectBrowserModal({ isOpen, onClose, onSelectProject }: Projec
   useEffect(() => {
     if (isOpen) {
       setIsLoading(true);
-      // Simulate loading delay for better UX
-      setTimeout(() => {
-        const allProjects = getAllProjects();
-        setProjects(allProjects);
-        setIsLoading(false);
-      }, 300);
+      void getAllBackendProjects()
+        .then((allProjects) => {
+          setProjects(allProjects);
+        })
+        .finally(() => {
+          setIsLoading(false);
+        });
     }
   }, [isOpen]);
 
-  const handleDelete = (projectName: string, event: React.MouseEvent) => {
+  const handleDelete = async (projectName: string, event: React.MouseEvent) => {
     event.stopPropagation();
     if (window.confirm(`Delete "${projectName}"?`)) {
-      deleteProject(projectName);
-      setProjects((prev) => prev.filter((p) => p.projectName !== projectName));
+      const isDeleted = await deleteProjectFromBackend(projectName);
+      if (isDeleted) {
+        setProjects((prev) => prev.filter((p) => p.projectName !== projectName));
+      }
     }
   };
 

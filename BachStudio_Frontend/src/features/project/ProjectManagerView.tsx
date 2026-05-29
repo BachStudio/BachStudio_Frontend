@@ -1,35 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  deleteProject,
   deleteProjectFromBackend,
   formatDate,
   getAllBackendProjects,
-  getAllProjects,
-  loadProject,
   loadProjectFromBackend,
-  saveProject,
   type ProjectData,
 } from '../editor/fileUtils';
-
-const mergeProjects = (localProjects: ProjectData[], backendProjects: ProjectData[]) => {
-  const projectMap = new Map<string, ProjectData>();
-
-  [...localProjects, ...backendProjects].forEach((project) => {
-    const existingProject = projectMap.get(project.projectName);
-    if (!existingProject || project.timestamp >= existingProject.timestamp) {
-      projectMap.set(project.projectName, project);
-    }
-  });
-
-  return Array.from(projectMap.values()).sort((a, b) => b.timestamp - a.timestamp);
-};
+import { HeaderUtilityButtons } from '../ui/HeaderUtilityButtons';
 
 export function ProjectManagerView() {
   const navigate = useNavigate();
   const [searchText, setSearchText] = useState('');
-  const [projects, setProjects] = useState(() => getAllProjects());
-  const [storageLabel, setStorageLabel] = useState('Local');
+  const [projects, setProjects] = useState<ProjectData[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
 
   const filteredProjects = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
@@ -47,10 +31,10 @@ export function ProjectManagerView() {
   }, [projects, searchText]);
 
   const refreshProjects = async () => {
-    const localProjects = getAllProjects();
+    setIsLoadingProjects(true);
     const backendProjects = await getAllBackendProjects();
-    setProjects(mergeProjects(localProjects, backendProjects));
-    setStorageLabel(backendProjects.length > 0 ? 'Backend + Local' : 'Local');
+    setProjects(backendProjects);
+    setIsLoadingProjects(false);
   };
 
   useEffect(() => {
@@ -63,18 +47,22 @@ export function ProjectManagerView() {
       return;
     }
 
-    deleteProject(projectName);
-    await deleteProjectFromBackend(projectName);
+    const isDeleted = await deleteProjectFromBackend(projectName);
+    if (!isDeleted) {
+      alert('온라인 프로젝트 삭제에 실패했습니다.');
+    }
     await refreshProjects();
   };
 
-  const handleLoad = async (projectName: string, bpm: number) => {
-    const project = loadProject(projectName) ?? await loadProjectFromBackend(projectName);
-    if (project) {
-      saveProject(project.projectName, project.tracks, project.bpm);
+  const handleLoad = async (projectName: string) => {
+    const project = await loadProjectFromBackend(projectName);
+    if (!project) {
+      alert('온라인 프로젝트를 불러오지 못했습니다.');
+      await refreshProjects();
+      return;
     }
 
-    navigate(`/editor?projectName=${encodeURIComponent(projectName)}&bpm=${encodeURIComponent(String(bpm))}`);
+    navigate(`/editor?projectName=${encodeURIComponent(project.projectName)}&bpm=${encodeURIComponent(String(project.bpm))}`);
   };
 
   return (
@@ -94,16 +82,8 @@ export function ProjectManagerView() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <button className="hover:bg-[#2c2c2c] transition-colors px-2 py-1 flex items-center">
-            <span className="material-symbols-outlined text-[18px]">help</span>
-          </button>
-          <button className="hover:bg-[#2c2c2c] transition-colors px-2 py-1 flex items-center">
-            <span className="material-symbols-outlined text-[18px]">settings</span>
-          </button>
-          <button className="bg-primary text-on-primary font-bold px-4 py-1 scale-95 active:bg-[#f4ffc6] active:text-black transition-all cursor-pointer">
-            Export
-          </button>
+        <div className="flex items-center gap-2">
+          <HeaderUtilityButtons buttonClassName="h-8 w-8 flex items-center justify-center hover:bg-[#2c2c2c] transition-colors text-zinc-300 hover:text-white" />
         </div>
       </header>
 
@@ -116,14 +96,14 @@ export function ProjectManagerView() {
 
           <div className="relative z-20 max-w-2xl">
             <div className="inline-block bg-primary text-on-primary px-2 py-0.5 font-mono text-[10px] font-bold tracking-widest uppercase mb-4">
-              Project Browser: Active
+              Project Browser: Online
             </div>
             <h1 className="text-5xl font-black tracking-tighter text-white uppercase leading-none mb-4">
               Project
               <span className="text-primary block">Manager</span>
             </h1>
             <p className="text-on-surface-variant font-body text-base max-w-lg leading-relaxed">
-              Load, save, and organize your local Bach Studio sessions from one place. Pick a saved project to open it in the editor.
+              Load, save, and organize your online Bach Studio sessions from one place. Pick a saved project to open it in the editor.
             </p>
           </div>
 
@@ -150,7 +130,7 @@ export function ProjectManagerView() {
             <div className="flex items-center gap-3">
               <div className="text-xs font-black uppercase tracking-[0.3em] text-primary">Active Projects</div>
               <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">
-                {filteredProjects.length} saved
+                {isLoadingProjects ? 'Loading' : `${filteredProjects.length} saved`}
               </span>
             </div>
 
@@ -178,12 +158,17 @@ export function ProjectManagerView() {
         </section>
 
         <div className="flex-1 overflow-auto p-6 md:p-12">
-          {filteredProjects.length === 0 ? (
+          {isLoadingProjects ? (
+            <div className="ghost-border min-h-[320px] flex flex-col items-center justify-center text-center bg-surface-container-low">
+              <span className="material-symbols-outlined text-5xl text-zinc-500 mb-4">sync</span>
+              <h2 className="text-lg font-black uppercase tracking-[0.2em] text-white">Loading projects</h2>
+            </div>
+          ) : filteredProjects.length === 0 ? (
             <div className="ghost-border min-h-[320px] flex flex-col items-center justify-center text-center bg-surface-container-low">
               <span className="material-symbols-outlined text-5xl text-zinc-500 mb-4">folder_open</span>
               <h2 className="text-lg font-black uppercase tracking-[0.2em] text-white">No saved projects</h2>
               <p className="text-zinc-500 text-sm mt-2 max-w-md">
-                Save a session in the editor, then it will appear here.
+                Save a session online in the editor, then it will appear here.
               </p>
             </div>
           ) : (
@@ -216,12 +201,12 @@ export function ProjectManagerView() {
 
                   <div className="mt-auto flex items-center justify-between text-[10px] text-zinc-500 uppercase font-bold mono pt-4 border-t border-outline/10">
                     <span>Status: <span className="text-primary">Saved</span></span>
-                    <span>{storageLabel}</span>
+                    <span>Online</span>
                   </div>
 
                   <div className="mt-5 flex gap-2">
                     <button
-                      onClick={() => handleLoad(project.projectName, project.bpm)}
+                      onClick={() => handleLoad(project.projectName)}
                       className="flex-1 bg-primary text-black py-3 font-black text-[10px] tracking-widest uppercase active:scale-95 transition-transform"
                     >
                       Load Project
@@ -254,7 +239,7 @@ export function ProjectManagerView() {
       <footer className="bg-[#0e0e0e] text-zinc-500 font-mono text-[9px] uppercase tracking-tighter fixed bottom-0 w-full flex justify-between items-center px-4 h-6 border-t border-[#484847]/20 z-50">
         <div>Bach Studio Engine v2.4 | Projects: {projects.length}</div>
         <div className="flex gap-4">
-          <span className="hover:text-white cursor-default">Storage: {storageLabel}</span>
+          <span className="hover:text-white cursor-default">Storage: Online</span>
           <span className="hover:text-white cursor-default">44.1kHz</span>
           <span className="text-[#f4ffc6]">24-bit</span>
         </div>

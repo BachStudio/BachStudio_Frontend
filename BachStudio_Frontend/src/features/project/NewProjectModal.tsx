@@ -1,12 +1,9 @@
-import { useState, useEffect } from 'react';
-import { getAllProjects } from '../editor/fileUtils';
-
 type NewProjectModalProps = {
   isOpen: boolean;
   projectName: string;
   projectBpm: string;
   onClose: () => void;
-  onStart: () => void;
+  onStart: () => void | Promise<void>;
   onProjectNameChange: (value: string) => void;
   onProjectBpmChange: (value: string) => void;
 };
@@ -20,26 +17,11 @@ export function NewProjectModal({
   onProjectNameChange,
   onProjectBpmChange,
 }: NewProjectModalProps) {
-  const [isDuplicateName, setIsDuplicateName] = useState(false);
-
-  useEffect(() => {
-    if (!projectName.trim()) {
-      setIsDuplicateName(false);
-      return;
-    }
-
-    const existingProjects = getAllProjects();
-    const isDuplicate = existingProjects.some(
-      (project) => project.projectName.toLowerCase() === projectName.trim().toLowerCase()
-    );
-    setIsDuplicateName(isDuplicate);
-  }, [projectName]);
-
   if (!isOpen) {
     return null;
   }
 
-  const isStartDisabled = isDuplicateName || !projectName.trim();
+  const isStartDisabled = !projectName.trim();
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-black/60 backdrop-blur-sm overflow-y-auto">
@@ -63,23 +45,18 @@ export function NewProjectModal({
               <input
                 className="w-full bg-surface-container-highest border-0 border-b-2 focus:ring-0 text-primary font-mono text-sm px-3 py-3 transition-all outline-none"
                 style={{
-                  borderBottomColor: isDuplicateName ? '#ff6b6b' : 'rgba(244, 255, 198, 0.3)',
+                  borderBottomColor: 'rgba(244, 255, 198, 0.3)',
                 }}
                 onFocus={(e) => {
-                  e.currentTarget.style.borderBottomColor = isDuplicateName ? '#ff6b6b' : 'rgba(244, 255, 198, 1)';
+                  e.currentTarget.style.borderBottomColor = 'rgba(244, 255, 198, 1)';
                 }}
                 onBlur={(e) => {
-                  e.currentTarget.style.borderBottomColor = isDuplicateName ? '#ff6b6b' : 'rgba(244, 255, 198, 0.3)';
+                  e.currentTarget.style.borderBottomColor = 'rgba(244, 255, 198, 0.3)';
                 }}
                 type="text"
                 value={projectName}
                 onChange={(event) => onProjectNameChange(event.target.value)}
               />
-              {isDuplicateName && (
-                <p className="text-red-500 font-mono text-[10px] uppercase tracking-widest">
-                  이 프로젝트 이름은 이미 존재합니다
-                </p>
-              )}
             </div>
             <div className="space-y-2">
               <label className="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Tempo (BPM)</label>

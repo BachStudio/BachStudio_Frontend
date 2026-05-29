@@ -46,6 +46,8 @@ type HummingWheelNote = {
   angleDeg: number;
 };
 
+type RecordingState = 'idle' | 'preparing' | 'recording' | 'stopping';
+
 const HUMMING_WHEEL_NOTES: HummingWheelNote[] = [
   { label: 'A', angleDeg: 180 },
   { label: 'B', angleDeg: 230 },
@@ -57,6 +59,12 @@ const HUMMING_WHEEL_NOTES: HummingWheelNote[] = [
 ];
 
 const MAX_PENDING_AUDIO_CHUNKS = 120;
+const HUMMING_CLOCK_UI_UPDATE_MS = 16;
+const HUMMING_PITCH_UI_UPDATE_MS = 120;
+const HUMMING_NOTE_UI_UPDATE_MS = 160;
+const HUMMING_SOCKET_OPEN_TIMEOUT_MS = 8000;
+const HUMMING_BACKEND_READY_TIMEOUT_MS = 20000;
+const HUMMING_AUTOSCROLL_UPDATE_MS = 120;
 
 const HUMMING_AUDIO_WORKLET = `
 class HummingAudioProcessor extends AudioWorkletProcessor {
@@ -146,14 +154,13 @@ export function PianoRollOverlay({
   onRealtimeHummingEvent,
 }: PianoRollOverlayProps) {
   const [isHummingPanelOpen, setIsHummingPanelOpen] = useState(false);
-  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'stopping'>('idle');
+  const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [hummingError, setHummingError] = useState('');
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
   const [detectedNoteLabel, setDetectedNoteLabel] = useState('D3');
   const [pitchConfidence, setPitchConfidence] = useState<number | null>(null);
   const [detectedKey, setDetectedKey] = useState('--');
-  const [recordingBeat, setRecordingBeat] = useState(0);
   const [streamedNoteCount, setStreamedNoteCount] = useState(0);
   const [streamStatus, setStreamStatus] = useState('Offline');
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
@@ -168,15 +175,54 @@ export function PianoRollOverlay({
   const recordingStartTimeRef = useRef<number | null>(null);
   const recordingFrameRef = useRef<number | null>(null);
   const lastBackendPitchLogRef = useRef(0);
+  const lastRecordingBeatUiUpdateRef = useRef(0);
+  const lastAutoScrollUpdateRef = useRef(0);
+  const lastPitchUiUpdateRef = useRef(0);
+  const lastNoteUiUpdateRef = useRef(0);
   const stopFallbackTimerRef = useRef<number | null>(null);
+  const recordingSessionRef = useRef(0);
+  const recordingStateRef = useRef<RecordingState>('idle');
+  const currentRecordingBeatRef = useRef(0);
+  const cancelPreparingRef = useRef<(() => void) | null>(null);
+  const livePlayheadRef = useRef<HTMLDivElement | null>(null);
+  const captureProgressRef = useRef<HTMLDivElement | null>(null);
   const activeHummingNote = detectedNoteLabel.match(/[A-G]/)?.[0] ?? 'D';
   const activeWheelAngle = HUMMING_WHEEL_NOTES.find((note) => note.label === activeHummingNote)?.angleDeg ?? 330;
   const wheelRotationDeg = activeWheelAngle - 330;
-  const visibleRecordingLengthBeats = Math.max(clipLengthBeats, recordingBeat + 0.25, 0.25);
-  const recordingProgressPercent = Math.min((recordingBeat / visibleRecordingLengthBeats) * 100, 100);
-  const livePlayheadLeft = recordingState === 'recording' || recordingState === 'stopping'
-    ? Math.min(Math.max(recordingBeat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH, 0), Math.max(gridTotalCols * GRID_COL_WIDTH - 2, 0))
-    : 64;
+
+  const setRecordingMode = (nextState: RecordingState) => {
+    recordingStateRef.current = nextState;
+    setRecordingState(nextState);
+  };
+
+  const applyRecordingBeat = (beat: number) => {
+    const nextBeat = Math.max(0, beat);
+    currentRecordingBeatRef.current = nextBeat;
+
+    const maxLeft = Math.max(gridTotalCols * GRID_COL_WIDTH - 2, 0);
+    const left = Math.min(Math.max(nextBeat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH, 0), maxLeft);
+    if (livePlayheadRef.current) {
+      livePlayheadRef.current.style.transform = `translateX(${left}px)`;
+    }
+
+    const visibleLengthBeats = Math.max(clipLengthBeats, nextBeat + 0.25, 0.25);
+    const progressPercent = recordingStateRef.current === 'idle'
+      ? 4
+      : Math.max(Math.min((nextBeat / visibleLengthBeats) * 100, 100), 4);
+    if (captureProgressRef.current) {
+      captureProgressRef.current.style.width = `${progressPercent}%`;
+    }
+
+    const now = performance.now();
+    if (
+      recordingStateRef.current === 'recording'
+      && gridRef.current
+      && now - lastAutoScrollUpdateRef.current >= HUMMING_AUTOSCROLL_UPDATE_MS
+    ) {
+      lastAutoScrollUpdateRef.current = now;
+      gridRef.current.scrollLeft = Math.max(0, left - gridRef.current.clientWidth * 0.58);
+    }
+  };
 
   const loadMicrophoneDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -203,15 +249,22 @@ export function PianoRollOverlay({
   const startRecordingClock = () => {
     stopRecordingClock();
     recordingStartTimeRef.current = performance.now();
+    lastRecordingBeatUiUpdateRef.current = 0;
+    lastAutoScrollUpdateRef.current = 0;
+    applyRecordingBeat(0);
 
     const tick = () => {
       if (recordingStartTimeRef.current === null) {
         return;
       }
 
-      const elapsedSeconds = (performance.now() - recordingStartTimeRef.current) / 1000;
-      const elapsedBeats = Math.min(elapsedSeconds * (bpm / 60), maxRecordingBeats);
-      setRecordingBeat((beat) => Math.max(beat, elapsedBeats));
+      const now = performance.now();
+      if (now - lastRecordingBeatUiUpdateRef.current >= HUMMING_CLOCK_UI_UPDATE_MS) {
+        lastRecordingBeatUiUpdateRef.current = now;
+        const elapsedSeconds = (now - recordingStartTimeRef.current) / 1000;
+        const elapsedBeats = Math.min(elapsedSeconds * (bpm / 60), maxRecordingBeats);
+        applyRecordingBeat(Math.max(currentRecordingBeatRef.current, elapsedBeats));
+      }
       recordingFrameRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -264,7 +317,10 @@ export function PianoRollOverlay({
   };
 
   const stopRealtimeHummingRecording = () => {
-    setRecordingState('stopping');
+    recordingSessionRef.current += 1;
+    cancelPreparingRef.current?.();
+    cancelPreparingRef.current = null;
+    setRecordingMode('stopping');
     setStreamStatus('Stopping');
     stopAudioCapture();
 
@@ -273,15 +329,17 @@ export function PianoRollOverlay({
       socket.send(JSON.stringify({ type: 'stop' }));
       stopFallbackTimerRef.current = window.setTimeout(() => {
         closeRealtimeSocket();
-        setRecordingState('idle');
+        setRecordingMode('idle');
         setStreamStatus('Offline');
+        applyRecordingBeat(0);
       }, 1200);
       return;
     }
 
     closeRealtimeSocket();
-    setRecordingState('idle');
+    setRecordingMode('idle');
     setStreamStatus('Offline');
+    applyRecordingBeat(0);
   };
 
   const handleStreamEvent = (event: HummingStreamEvent) => {
@@ -298,10 +356,14 @@ export function PianoRollOverlay({
     }
 
     if (event.type === 'pitch') {
-      setRecordingBeat((beat) => Math.max(beat, event.beat, 0));
-      setPitchConfidence(event.confidence);
-      if (event.voiced && event.note) {
-        setDetectedNoteLabel(event.note);
+      const now = performance.now();
+      if (now - lastPitchUiUpdateRef.current >= HUMMING_PITCH_UI_UPDATE_MS) {
+        lastPitchUiUpdateRef.current = now;
+        applyRecordingBeat(Math.max(currentRecordingBeatRef.current, event.beat, 0));
+        setPitchConfidence(event.confidence);
+        if (event.voiced && event.note) {
+          setDetectedNoteLabel(event.note);
+        }
       }
       if (event.timestampMs - lastBackendPitchLogRef.current > 1000 || lastBackendPitchLogRef.current === 0) {
         lastBackendPitchLogRef.current = event.timestampMs;
@@ -315,14 +377,19 @@ export function PianoRollOverlay({
           beat: event.beat,
         });
       }
-      onRealtimeHummingEvent(event);
       return;
     }
 
     if (event.type === 'note_on' || event.type === 'note_update' || event.type === 'note_off') {
+      const now = performance.now();
+      if (event.type === 'note_update' && now - lastNoteUiUpdateRef.current < HUMMING_NOTE_UI_UPDATE_MS) {
+        return;
+      }
+
+      lastNoteUiUpdateRef.current = now;
       setDetectedNoteLabel(event.note.note);
       setPitchConfidence(event.note.confidence);
-      setRecordingBeat((beat) => Math.max(beat, event.note.startBeat + event.note.durationBeats, 0));
+      applyRecordingBeat(Math.max(currentRecordingBeatRef.current, event.note.startBeat + event.note.durationBeats, 0));
       if (event.type === 'note_on') {
         setStreamedNoteCount((count) => count + 1);
       }
@@ -343,8 +410,9 @@ export function PianoRollOverlay({
       onRealtimeHummingEvent(event);
       closeRealtimeSocket();
       stopAudioCapture();
-      setRecordingState('idle');
+      setRecordingMode('idle');
       setStreamStatus('Offline');
+      applyRecordingBeat(0);
       return;
     }
 
@@ -363,18 +431,21 @@ export function PianoRollOverlay({
     setDetectedKey('--');
     setDetectedNoteLabel('D3');
     setPitchConfidence(null);
-    setRecordingBeat(0);
+    applyRecordingBeat(0);
     setStreamedNoteCount(0);
     lastBackendPitchLogRef.current = 0;
+    lastPitchUiUpdateRef.current = 0;
+    lastNoteUiUpdateRef.current = 0;
+    const sessionId = recordingSessionRef.current + 1;
+    recordingSessionRef.current = sessionId;
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setHummingError('Microphone recording is not supported in this browser.');
       return;
     }
 
-    setRecordingState('recording');
+    setRecordingMode('preparing');
     setStreamStatus('Preparing');
-    startRecordingClock();
     console.info('[Humming] record start', {
       mode: 'backend_rmvpe',
       bpm,
@@ -395,37 +466,95 @@ export function PianoRollOverlay({
       socket.binaryType = 'arraybuffer';
       websocketRef.current = socket;
 
-      socket.onopen = () => {
-        pendingAudioChunksRef.current.forEach((chunk) => socket.send(chunk));
-        pendingAudioChunksRef.current = [];
-        setStreamStatus('Streaming');
+      const socketOpenPromise = new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          reject(new Error('Humming AI socket timed out.'));
+        }, HUMMING_SOCKET_OPEN_TIMEOUT_MS);
+
+        socket.addEventListener('open', () => {
+          window.clearTimeout(timeout);
+          resolve();
+        }, { once: true });
+
+        socket.addEventListener('error', () => {
+          window.clearTimeout(timeout);
+          reject(new Error('Humming AI stream failed. Check backend server.'));
+        }, { once: true });
+      });
+
+      let backendReady = false;
+      let resolveBackendReady: (() => void) | null = null;
+      let rejectBackendReady: ((error: Error) => void) | null = null;
+      const backendReadyPromise = new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          reject(new Error('Humming AI backend is still preparing. Try again after the model loads.'));
+        }, HUMMING_BACKEND_READY_TIMEOUT_MS);
+
+        resolveBackendReady = () => {
+          backendReady = true;
+          window.clearTimeout(timeout);
+          resolve();
+        };
+
+        rejectBackendReady = (error: Error) => {
+          window.clearTimeout(timeout);
+          reject(error);
+        };
+      });
+      cancelPreparingRef.current = () => {
+        rejectBackendReady?.(new Error('Recording canceled.'));
       };
 
       socket.onmessage = (message) => {
         if (typeof message.data !== 'string') {
           return;
         }
-        handleStreamEvent(JSON.parse(message.data) as HummingStreamEvent);
+
+        const streamEvent = JSON.parse(message.data) as HummingStreamEvent;
+        if (streamEvent.type === 'ready' && resolveBackendReady) {
+          resolveBackendReady();
+          resolveBackendReady = null;
+        }
+        if (streamEvent.type === 'error' && rejectBackendReady && !backendReady) {
+          rejectBackendReady(new Error(streamEvent.message));
+          rejectBackendReady = null;
+        }
+        handleStreamEvent(streamEvent);
       };
 
       socket.onerror = () => {
+        rejectBackendReady?.(new Error('Humming AI stream failed. Check backend server.'));
+        rejectBackendReady = null;
         setHummingError('Humming AI stream failed. Check backend server.');
         console.error('[Humming] websocket error');
         stopAudioCapture();
-        setRecordingState('idle');
+        setRecordingMode('idle');
         setStreamStatus('Offline');
+        applyRecordingBeat(0);
       };
 
       socket.onclose = () => {
+        if (!backendReady && rejectBackendReady) {
+          rejectBackendReady(new Error('Humming AI stream closed before it was ready.'));
+          rejectBackendReady = null;
+        }
         console.info('[Humming] websocket closed');
         stopAudioCapture();
-        setRecordingState('idle');
+        setRecordingMode('idle');
         setStreamStatus('Offline');
+        applyRecordingBeat(0);
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const streamPromise = navigator.mediaDevices.getUserMedia({
         audio: selectedInputDeviceId ? { deviceId: { exact: selectedInputDeviceId } } : true,
       });
+
+      const [stream] = await Promise.all([streamPromise, socketOpenPromise, backendReadyPromise]);
+      if (recordingSessionRef.current !== sessionId) {
+        stream.getTracks().forEach((track) => track.stop());
+        closeRealtimeSocket();
+        return;
+      }
       mediaStreamRef.current = stream;
 
       if (audioContext.state === 'suspended') {
@@ -462,12 +591,36 @@ export function PianoRollOverlay({
       monitorGainRef.current = monitorGain;
 
       await loadMicrophoneDevices();
+      if (recordingSessionRef.current !== sessionId) {
+        stopAudioCapture();
+        closeRealtimeSocket();
+        return;
+      }
+
+      setRecordingMode('recording');
+      setStreamStatus((status) => (status === 'Preparing' ? 'Streaming' : status));
+      startRecordingClock();
+      console.info('[Humming] capture streaming', {
+        sampleRate: audioContext.sampleRate,
+        inputDeviceId: selectedInputDeviceId || 'default',
+      });
     } catch (error) {
+      if (recordingSessionRef.current !== sessionId) {
+        stopAudioCapture();
+        closeRealtimeSocket();
+        return;
+      }
+
       stopAudioCapture();
       closeRealtimeSocket();
-      setRecordingState('idle');
+      setRecordingMode('idle');
       setStreamStatus('Offline');
+      applyRecordingBeat(0);
       setHummingError(error instanceof Error ? error.message : 'Recording failed.');
+    } finally {
+      if (recordingSessionRef.current === sessionId) {
+        cancelPreparingRef.current = null;
+      }
     }
   };
 
@@ -548,16 +701,6 @@ export function PianoRollOverlay({
       navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
     };
   }, [selectedInputDeviceId]);
-
-  useEffect(() => {
-    if (recordingState !== 'recording' || !gridRef.current) {
-      return;
-    }
-
-    const grid = gridRef.current;
-    const targetLeft = livePlayheadLeft - grid.clientWidth * 0.58;
-    grid.scrollLeft = Math.max(0, targetLeft);
-  }, [livePlayheadLeft, recordingState, gridRef]);
 
   const getWheelPointStyle = (angleDeg: number, radiusPercent: number) => {
     const radian = (angleDeg * Math.PI) / 180;
@@ -694,8 +837,9 @@ export function PianoRollOverlay({
                     ))}
                   </div>
                   <div
-                    className="absolute top-0 bottom-0 w-[2px] bg-primary z-30 shadow-[0_0_10px_rgba(244,255,198,0.5)] transition-[left] duration-150 ease-linear"
-                    style={{ left: `${livePlayheadLeft}px` }}
+                    ref={livePlayheadRef}
+                    className="absolute top-0 bottom-0 left-0 w-[2px] bg-primary z-30 shadow-[0_0_10px_rgba(244,255,198,0.5)] will-change-transform"
+                    style={{ transform: 'translateX(0px)' }}
                   ></div>
 
                   {activeTrackNotes.length === 0 && (
@@ -858,10 +1002,9 @@ export function PianoRollOverlay({
                   <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Capture Status</span>
                   <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
                     <div
-                      className="h-full bg-[#ff9ba4] transition-all"
-                      style={{
-                        width: recordingState === 'idle' ? '4%' : `${Math.max(recordingProgressPercent, 4)}%`,
-                      }}
+                      ref={captureProgressRef}
+                      className="h-full bg-[#ff9ba4]"
+                      style={{ width: '4%' }}
                     ></div>
                   </div>
                   <div className="flex justify-between text-[9px] font-mono uppercase tracking-widest text-zinc-500">
@@ -899,12 +1042,18 @@ export function PianoRollOverlay({
                     onClick={recordingState === 'idle' ? startHummingRecording : stopRealtimeHummingRecording}
                     disabled={recordingState === 'stopping' || isUploadingAudio}
                     className={`h-10 border font-black text-[10px] uppercase tracking-[0.14em] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                      recordingState === 'recording'
+                      recordingState === 'recording' || recordingState === 'preparing'
                         ? 'border-red-300/70 bg-red-500/20 text-red-100'
                         : 'border-white/15 bg-[#17191d] text-[#f3f5fb] hover:border-[#ff9ba4]/70 hover:text-[#ffb2ba]'
                     } w-full`}
                   >
-                    {recordingState === 'recording' ? 'Stop' : recordingState === 'stopping' ? 'Stopping' : 'Record'}
+                    {recordingState === 'recording'
+                      ? 'Stop'
+                      : recordingState === 'preparing'
+                        ? 'Preparing'
+                        : recordingState === 'stopping'
+                          ? 'Stopping'
+                          : 'Record'}
                   </button>
                 </div>
               </div>

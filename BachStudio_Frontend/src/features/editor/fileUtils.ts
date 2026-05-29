@@ -1,10 +1,16 @@
 import type { Track } from './types';
+import { getAuthHeaders, getStoredAuth, isSignedIn } from '../auth/authUtils';
 
 export interface ProjectData {
   projectName: string;
   bpm: number;
   tracks: Track[];
   timestamp: number;
+  displayName?: string;
+  ownerKey?: string;
+  ownerId?: string;
+  ownerEmail?: string;
+  storageProjectName?: string;
 }
 
 export type HummingAiNote = {
@@ -44,161 +50,214 @@ export type HummingStreamEvent =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-const STORAGE_PREFIX = 'bach-studio-project-';
-const PROJECT_LIST_KEY = 'bach-studio-project-list';
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
+const LEGACY_STORAGE_PREFIX = 'bach-studio-project-';
+const LEGACY_PROJECT_LIST_KEY = 'bach-studio-project-list';
 
-function normalizeProjectData(project: ProjectData): ProjectData {
+type ProjectOwner = {
+  key: string;
+  id?: string;
+  email?: string;
+};
+
+function hashText(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getCurrentProjectOwner(): ProjectOwner | null {
+  const session = getStoredAuth();
+  const id = session?.user?.id?.trim();
+  const email = session?.user?.email?.trim().toLowerCase();
+  const ownerSource = id || email;
+
+  if (!ownerSource) {
+    return null;
+  }
+
   return {
-    projectName: project.projectName,
-    bpm: Number(project.bpm),
-    tracks: Array.isArray(project.tracks) ? project.tracks : [],
-    timestamp: Number(project.timestamp) || Date.now(),
+    key: hashText(ownerSource.toLowerCase()),
+    id,
+    email,
   };
 }
 
-function cacheProject(project: ProjectData): boolean {
-  try {
-    const normalizedProject = normalizeProjectData(project);
-    const storageKey = `${STORAGE_PREFIX}${normalizedProject.projectName}`;
-    localStorage.setItem(storageKey, JSON.stringify(normalizedProject));
+function getScopedProjectName(displayName: string, owner: ProjectOwner) {
+  const normalizedDisplayName = displayName.trim();
+  const projectKey = hashText(`${owner.key}:${normalizedDisplayName.toLowerCase()}`);
+  return `u_${owner.key}_${projectKey}`;
+}
 
-    const projectList = JSON.parse(localStorage.getItem(PROJECT_LIST_KEY) || '[]') as string[];
-    if (!projectList.includes(normalizedProject.projectName)) {
-      projectList.push(normalizedProject.projectName);
-      localStorage.setItem(PROJECT_LIST_KEY, JSON.stringify(projectList));
+function isProjectOwnedByCurrentUser(project: ProjectData, owner: ProjectOwner) {
+  if (project.ownerKey === owner.key) {
+    return true;
+  }
+
+  if (owner.id && project.ownerId === owner.id) {
+    return true;
+  }
+
+  if (owner.email && project.ownerEmail?.toLowerCase() === owner.email) {
+    return true;
+  }
+
+  return project.projectName.startsWith(`u_${owner.key}_`);
+}
+
+function normalizeProjectData(project: ProjectData): ProjectData {
+  const displayName = project.displayName?.trim() || project.projectName;
+
+  return {
+    projectName: displayName,
+    bpm: Number(project.bpm),
+    tracks: Array.isArray(project.tracks) ? project.tracks : [],
+    timestamp: Number(project.timestamp) || Date.now(),
+    displayName,
+    ownerKey: project.ownerKey,
+    ownerId: project.ownerId,
+    ownerEmail: project.ownerEmail,
+    storageProjectName: project.storageProjectName ?? project.projectName,
+  };
+}
+
+function getJsonHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders(),
+  };
+}
+
+async function readResponseMessage(response: Response) {
+  try {
+    const payload = await response.json();
+    return typeof payload.detail === 'string' ? payload.detail : response.statusText;
+  } catch {
+    return response.statusText;
+  }
+}
+
+export function clearLegacyLocalProjects() {
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key === LEGACY_PROJECT_LIST_KEY || key?.startsWith(LEGACY_STORAGE_PREFIX)) {
+        keysToRemove.push(key);
+      }
     }
-
-    return true;
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
   } catch (error) {
-    console.error('Failed to cache project:', error);
-    return false;
-  }
-}
-
-export function saveProject(projectName: string, tracks: Track[], bpm: number): boolean {
-  try {
-    const projectData: ProjectData = {
-      projectName,
-      bpm,
-      tracks,
-      timestamp: Date.now(),
-    };
-
-    return cacheProject(projectData);
-  } catch (error) {
-    console.error('Failed to save project:', error);
-    return false;
-  }
-}
-
-export function loadProject(projectName: string): ProjectData | null {
-  try {
-    const storageKey = `${STORAGE_PREFIX}${projectName}`;
-    const data = localStorage.getItem(storageKey);
-
-    if (!data) return null;
-
-    return JSON.parse(data) as ProjectData;
-  } catch (error) {
-    console.error('Failed to load project:', error);
-    return null;
-  }
-}
-
-export function getAllProjects(): ProjectData[] {
-  try {
-    const projectList = JSON.parse(localStorage.getItem(PROJECT_LIST_KEY) || '[]') as string[];
-    return projectList
-      .map((projectName) => loadProject(projectName))
-      .filter((project) => project !== null) as ProjectData[];
-  } catch (error) {
-    console.error('Failed to get projects:', error);
-    return [];
-  }
-}
-
-export function deleteProject(projectName: string): boolean {
-  try {
-    const storageKey = `${STORAGE_PREFIX}${projectName}`;
-    localStorage.removeItem(storageKey);
-
-    // Update project list
-    const projectList = JSON.parse(localStorage.getItem(PROJECT_LIST_KEY) || '[]') as string[];
-    const updatedList = projectList.filter((name) => name !== projectName);
-    localStorage.setItem(PROJECT_LIST_KEY, JSON.stringify(updatedList));
-
-    return true;
-  } catch (error) {
-    console.error('Failed to delete project:', error);
-    return false;
+    console.warn('Failed to clear legacy local projects:', error);
   }
 }
 
 export async function saveProjectToBackend(projectName: string, tracks: Track[], bpm: number): Promise<boolean> {
+  const owner = getCurrentProjectOwner();
+  if (!isSignedIn() || !owner) {
+    console.warn('Online project save skipped: login required');
+    return false;
+  }
+
+  const displayName = projectName.trim();
   const projectData: ProjectData = {
-    projectName,
+    projectName: getScopedProjectName(displayName, owner),
+    displayName,
     bpm,
     tracks,
     timestamp: Date.now(),
+    ownerKey: owner.key,
+    ownerId: owner.id,
+    ownerEmail: owner.email,
   };
 
   try {
     const response = await fetch(`${API_BASE_URL}/projects/`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: getJsonHeaders(),
       body: JSON.stringify(projectData),
     });
 
+    if (!response.ok) {
+      console.warn('Backend project save failed:', await readResponseMessage(response));
+      return false;
+    }
+
     return response.ok;
   } catch (error) {
-    console.warn('Backend project save failed:', error);
+    console.warn('Online project save failed:', error);
     return false;
   }
 }
 
 export async function loadProjectFromBackend(projectName: string): Promise<ProjectData | null> {
+  const owner = getCurrentProjectOwner();
+  if (!isSignedIn() || !owner) {
+    return null;
+  }
+
   try {
-    const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectName)}`);
+    const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(getScopedProjectName(projectName, owner))}`, {
+      headers: getAuthHeaders(),
+    });
     if (!response.ok) {
       return null;
     }
 
-    const project = normalizeProjectData((await response.json()) as ProjectData);
-    cacheProject(project);
-    return project;
+    const project = (await response.json()) as ProjectData;
+    if (!isProjectOwnedByCurrentUser(project, owner)) {
+      return null;
+    }
+
+    return normalizeProjectData(project);
   } catch (error) {
-    console.warn('Backend project load failed:', error);
+    console.warn('Online project load failed:', error);
     return null;
   }
 }
 
 export async function getAllBackendProjects(): Promise<ProjectData[]> {
+  const owner = getCurrentProjectOwner();
+  if (!isSignedIn() || !owner) {
+    return [];
+  }
+
   try {
-    const response = await fetch(`${API_BASE_URL}/projects/`);
+    const response = await fetch(`${API_BASE_URL}/projects/`, {
+      headers: getAuthHeaders(),
+    });
     if (!response.ok) {
       return [];
     }
 
-    const projects = ((await response.json()) as ProjectData[]).map(normalizeProjectData);
-    projects.forEach(cacheProject);
-    return projects;
+    return ((await response.json()) as ProjectData[])
+      .filter((project) => isProjectOwnedByCurrentUser(project, owner))
+      .map(normalizeProjectData)
+      .sort((left, right) => right.timestamp - left.timestamp);
   } catch (error) {
-    console.warn('Backend project list failed:', error);
+    console.warn('Online project list failed:', error);
     return [];
   }
 }
 
 export async function deleteProjectFromBackend(projectName: string): Promise<boolean> {
+  const owner = getCurrentProjectOwner();
+  if (!isSignedIn() || !owner) {
+    console.warn('Online project delete skipped: login required');
+    return false;
+  }
+
   try {
-    const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectName)}`, {
+    const response = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(getScopedProjectName(projectName, owner))}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     return response.ok;
   } catch (error) {
-    console.warn('Backend project delete failed:', error);
+    console.warn('Online project delete failed:', error);
     return false;
   }
 }
@@ -264,8 +323,8 @@ export function getHummingStreamUrl(params: {
   return url.toString();
 }
 
-export function exportProjectAsJson(projectName: string): string | null {
-  const project = loadProject(projectName);
+export async function exportProjectAsJson(projectName: string): Promise<string | null> {
+  const project = await loadProjectFromBackend(projectName);
   if (!project) return null;
 
   return JSON.stringify(project, null, 2);

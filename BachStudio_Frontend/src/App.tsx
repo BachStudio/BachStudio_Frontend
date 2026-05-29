@@ -1,16 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 import { MainEditor } from './features/editor/MainEditor';
 import { LandingView } from './features/landing/LandingView';
 import { ProjectManagerView } from './features/project/ProjectManagerView';
 import { NewProjectModal } from './features/project/NewProjectModal';
-import { getAllProjects } from './features/editor/fileUtils';
+import { clearLegacyLocalProjects, getAllBackendProjects } from './features/editor/fileUtils';
+import { AuthCallbackView } from './features/auth/AuthCallbackView';
+import { clearStoredAuth, getStoredAuth, startGoogleLogin } from './features/auth/authUtils';
 
 const generateUniqueName = () => {
-  const projects = getAllProjects();
-  const existingNames = new Set(projects.map(p => p.projectName));
-
-  // SESSION_YYYYMMDD_HHMMSS 형식으로 고유한 이름 생성
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -19,17 +17,7 @@ const generateUniqueName = () => {
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const seconds = String(now.getSeconds()).padStart(2, '0');
 
-  let baseName = `SESSION_${year}${month}${day}_${hours}${minutes}${seconds}`;
-  let finalName = baseName;
-  let counter = 1;
-
-  // 중복이 없을 때까지 번호 추가
-  while (existingNames.has(finalName)) {
-    finalName = `${baseName}_${counter}`;
-    counter++;
-  }
-
-  return finalName;
+  return `SESSION_${year}${month}${day}_${hours}${minutes}${seconds}`;
 };
 
 export default function App() {
@@ -37,17 +25,44 @@ export default function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [projectName, setProjectName] = useState('');
   const [projectBpm, setProjectBpm] = useState('128');
+  const [authSession, setAuthSession] = useState(() => getStoredAuth());
+  const [isSigningIn, setIsSigningIn] = useState(false);
+
+  useEffect(() => {
+    clearLegacyLocalProjects();
+
+    const syncAuthSession = () => {
+      setAuthSession(getStoredAuth());
+    };
+
+    window.addEventListener('bach-studio-auth-change', syncAuthSession);
+    window.addEventListener('storage', syncAuthSession);
+
+    return () => {
+      window.removeEventListener('bach-studio-auth-change', syncAuthSession);
+      window.removeEventListener('storage', syncAuthSession);
+    };
+  }, []);
 
   const handleOpenModal = () => {
+    if (!authSession) {
+      void handleGoogleLogin();
+      return;
+    }
+
     setProjectName(generateUniqueName());
     setIsModalOpen(true);
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
+    if (!authSession) {
+      await handleGoogleLogin();
+      return;
+    }
+
     const normalizedName = projectName.trim() || generateUniqueName();
-    
-    // 중복 체크: 이미 존재하는 프로젝트명인지 확인
-    const existingProjects = getAllProjects();
+
+    const existingProjects = await getAllBackendProjects();
     const isDuplicate = existingProjects.some(
       (project) => project.projectName.toLowerCase() === normalizedName.toLowerCase()
     );
@@ -64,6 +79,24 @@ export default function App() {
     navigate(`/editor?projectName=${encodeURIComponent(normalizedName)}&bpm=${encodeURIComponent(normalizedBpm)}`);
   };
 
+  const handleGoogleLogin = async () => {
+    setIsSigningIn(true);
+    try {
+      await startGoogleLogin(`${window.location.pathname}${window.location.search}`);
+    } catch (error) {
+      setIsSigningIn(false);
+      alert(error instanceof Error ? error.message : 'Google login failed');
+    }
+  };
+
+  const handleLogout = () => {
+    clearStoredAuth();
+    clearLegacyLocalProjects();
+    setAuthSession(null);
+    setIsModalOpen(false);
+    navigate('/');
+  };
+
   return (
     <Routes>
       <Route
@@ -72,7 +105,17 @@ export default function App() {
           <>
             <LandingView
               onStartProject={handleOpenModal}
-              onOpenProjectManager={() => navigate('/projects')}
+              onOpenProjectManager={() => {
+                if (authSession) {
+                  navigate('/projects');
+                  return;
+                }
+                void handleGoogleLogin();
+              }}
+              authUser={authSession?.user ?? null}
+              isSigningIn={isSigningIn}
+              onGoogleLogin={handleGoogleLogin}
+              onLogout={handleLogout}
             />
             <NewProjectModal
               isOpen={isModalOpen}
@@ -86,8 +129,30 @@ export default function App() {
           </>
         )}
       />
-      <Route path="/projects" element={<ProjectManagerView />} />
-      <Route path="/editor" element={<MainEditor />} />
+      <Route path="/auth/callback" element={<AuthCallbackView />} />
+      <Route path="/projects" element={authSession ? <ProjectManagerView /> : <LandingRedirect onLogin={handleGoogleLogin} />} />
+      <Route path="/editor" element={authSession ? <MainEditor /> : <LandingRedirect onLogin={handleGoogleLogin} />} />
     </Routes>
+  );
+}
+
+function LandingRedirect({ onLogin }: { onLogin: () => Promise<void> }) {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    navigate('/', { replace: true });
+  }, [navigate]);
+
+  return (
+    <div className="min-h-screen bg-[#0e0e0e] text-[#f4ffc6] flex items-center justify-center">
+      <button
+        onClick={() => {
+          void onLogin();
+        }}
+        className="ghost-border px-6 py-3 text-xs font-black uppercase tracking-widest"
+      >
+        Google Login Required
+      </button>
+    </div>
   );
 }
