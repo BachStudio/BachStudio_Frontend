@@ -15,6 +15,9 @@ export type Clip = {
   start: number;
   length: number;
   notes: Note[];
+  audioDataUrl?: string;
+  audioMimeType?: string;
+  audioPreview?: number[];
 };
 
 export type Track = {
@@ -30,6 +33,9 @@ export type Track = {
   drumKitId: DrumKitId;
   audioSourceId: AudioSourceId;
   volumeDb: number;
+  reverbWet: number;
+  delayWet: number;
+  distortion: number;
   outputBusId: number | null;
   busGainDb: number;
 };

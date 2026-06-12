@@ -1,20 +1,24 @@
 type NewProjectModalProps = {
   isOpen: boolean;
   projectName: string;
+  projectDescription: string;
   projectBpm: string;
   onClose: () => void;
   onStart: () => void | Promise<void>;
   onProjectNameChange: (value: string) => void;
+  onProjectDescriptionChange: (value: string) => void;
   onProjectBpmChange: (value: string) => void;
 };
 
 export function NewProjectModal({
   isOpen,
   projectName,
+  projectDescription,
   projectBpm,
   onClose,
   onStart,
   onProjectNameChange,
+  onProjectDescriptionChange,
   onProjectBpmChange,
 }: NewProjectModalProps) {
   if (!isOpen) {
@@ -57,6 +61,19 @@ export function NewProjectModal({
                 value={projectName}
                 onChange={(event) => onProjectNameChange(event.target.value)}
               />
+            </div>
+            <div className="space-y-2">
+              <label className="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Project Description</label>
+              <textarea
+                className="w-full min-h-24 resize-y bg-surface-container-highest border-0 border-b-2 border-primary/30 focus:border-primary focus:ring-0 text-white font-mono text-sm px-3 py-3 outline-none"
+                value={projectDescription}
+                maxLength={500}
+                placeholder="Describe this project"
+                onChange={(event) => onProjectDescriptionChange(event.target.value)}
+              />
+              <div className="text-right font-mono text-[9px] text-zinc-600">
+                {projectDescription.length}/500
+              </div>
             </div>
             <div className="space-y-2">
               <label className="block font-mono text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Tempo (BPM)</label>

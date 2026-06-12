@@ -40,6 +40,9 @@ export const DEFAULT_TRACK_SETTINGS = {
   drumKitId: 'electro' as const,
   audioSourceId: 'vocal_chop' as const,
   volumeDb: -4,
+  reverbWet: 0,
+  delayWet: 0,
+  distortion: 0,
   outputBusId: null as number | null,
   busGainDb: 0,
 };

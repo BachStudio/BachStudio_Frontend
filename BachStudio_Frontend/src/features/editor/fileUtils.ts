@@ -3,6 +3,7 @@ import { getAuthHeaders, getStoredAuth, isSignedIn } from '../auth/authUtils';
 
 export interface ProjectData {
   projectName: string;
+  description?: string;
   bpm: number;
   tracks: Track[];
   timestamp: number;
@@ -113,6 +114,7 @@ function normalizeProjectData(project: ProjectData): ProjectData {
 
   return {
     projectName: displayName,
+    description: project.description?.trim() ?? '',
     bpm: Number(project.bpm),
     tracks: Array.isArray(project.tracks) ? project.tracks : [],
     timestamp: Number(project.timestamp) || Date.now(),
@@ -155,7 +157,12 @@ export function clearLegacyLocalProjects() {
   }
 }
 
-export async function saveProjectToBackend(projectName: string, tracks: Track[], bpm: number): Promise<boolean> {
+export async function saveProjectToBackend(
+  projectName: string,
+  tracks: Track[],
+  bpm: number,
+  description = '',
+): Promise<boolean> {
   const owner = getCurrentProjectOwner();
   if (!isSignedIn() || !owner) {
     console.warn('Online project save skipped: login required');
@@ -166,6 +173,7 @@ export async function saveProjectToBackend(projectName: string, tracks: Track[],
   const projectData: ProjectData = {
     projectName: getScopedProjectName(displayName, owner),
     displayName,
+    description: description.trim(),
     bpm,
     tracks,
     timestamp: Date.now(),

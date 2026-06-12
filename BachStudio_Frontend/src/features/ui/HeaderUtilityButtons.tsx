@@ -10,6 +10,11 @@ import {
   type AppLanguage,
   utilityCopy,
 } from './language';
+import {
+  getDeviceSettings,
+  setDeviceSettings,
+  type AudioDeviceSettings,
+} from './deviceSettings';
 
 type HeaderUtilityButtonsProps = {
   buttonClassName?: string;
@@ -27,6 +32,10 @@ export function HeaderUtilityButtons({
   const [activePanel, setActivePanel] = useState<UtilityPanel>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
   const [language, setLanguage] = useState<AppLanguage>(() => getStoredLanguage());
+  const [deviceSettings, setCurrentDeviceSettings] = useState<AudioDeviceSettings>(() => getDeviceSettings());
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [midiInputs, setMidiInputs] = useState<Array<{ id: string; name: string }>>([]);
   const copy = utilityCopy[language];
 
   useEffect(() => {
@@ -66,6 +75,43 @@ export function HeaderUtilityButtons({
     setSettingsMessage(`${utilityCopy[value].languageSet}: ${optionLabel}`);
   };
 
+  const loadDevices = async (requestPermission = false) => {
+    try {
+      if (navigator.mediaDevices && requestPermission) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+      }
+
+      if (navigator.mediaDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
+        setAudioOutputs(devices.filter((device) => device.kind === 'audiooutput'));
+      }
+
+      if (navigator.requestMIDIAccess) {
+        const midiAccess = await navigator.requestMIDIAccess();
+        setMidiInputs(Array.from(midiAccess.inputs.values()).map((input) => ({
+          id: input.id,
+          name: input.name || 'MIDI Input',
+        })));
+      }
+    } catch (error) {
+      setSettingsMessage(error instanceof Error ? error.message : 'Device access failed');
+    }
+  };
+
+  const updateDeviceSetting = (key: keyof AudioDeviceSettings, value: string) => {
+    const nextSettings = { ...deviceSettings, [key]: value };
+    setCurrentDeviceSettings(nextSettings);
+    setDeviceSettings(nextSettings);
+  };
+
+  useEffect(() => {
+    if (activePanel === 'settings') {
+      void loadDevices();
+    }
+  }, [activePanel]);
+
   return (
     <>
       <button
@@ -90,7 +136,7 @@ export function HeaderUtilityButtons({
       {activePanel && (
         <div className="fixed inset-0 z-[120] flex items-start justify-end bg-black/45 p-4 pt-14" onMouseDown={closePanel}>
           <section
-            className="w-full max-w-sm border border-white/10 bg-[#111318] p-5 shadow-2xl"
+            className="max-h-[calc(100vh-4rem)] w-full max-w-sm overflow-y-auto border border-white/10 bg-[#111318] p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="mb-5 flex items-center justify-between border-b border-white/10 pb-3">
@@ -142,6 +188,63 @@ export function HeaderUtilityButtons({
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadDevices(true)}
+                  className="flex w-full items-center justify-between border border-white/10 bg-[#191c23] px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-100 transition-colors hover:border-primary/70 hover:text-primary"
+                >
+                  {copy.devicePermission}
+                  <span className="material-symbols-outlined text-[16px]">devices</span>
+                </button>
+                <div className="border border-white/10 bg-[#191c23] px-4 py-3">
+                  <label className="mb-2 block font-mono text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                    {copy.audioInput}
+                  </label>
+                  <select
+                    value={deviceSettings.inputDeviceId}
+                    onChange={(event) => updateDeviceSetting('inputDeviceId', event.target.value)}
+                    className="h-9 w-full border border-white/10 bg-[#0d0f13] px-3 font-mono text-[10px] text-zinc-100 outline-none focus:border-primary/70"
+                  >
+                    <option value="">{copy.defaultDevice}</option>
+                    {audioInputs.map((device, index) => (
+                      <option key={device.deviceId || `input-${index}`} value={device.deviceId}>
+                        {device.label || `${copy.audioInput} ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="border border-white/10 bg-[#191c23] px-4 py-3">
+                  <label className="mb-2 block font-mono text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                    {copy.audioOutput}
+                  </label>
+                  <select
+                    value={deviceSettings.outputDeviceId}
+                    onChange={(event) => updateDeviceSetting('outputDeviceId', event.target.value)}
+                    className="h-9 w-full border border-white/10 bg-[#0d0f13] px-3 font-mono text-[10px] text-zinc-100 outline-none focus:border-primary/70"
+                  >
+                    <option value="">{copy.defaultDevice}</option>
+                    {audioOutputs.map((device, index) => (
+                      <option key={device.deviceId || `output-${index}`} value={device.deviceId}>
+                        {device.label || `${copy.audioOutput} ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="border border-white/10 bg-[#191c23] px-4 py-3">
+                  <label className="mb-2 block font-mono text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                    {copy.midiInput}
+                  </label>
+                  <select
+                    value={deviceSettings.midiInputId}
+                    onChange={(event) => updateDeviceSetting('midiInputId', event.target.value)}
+                    className="h-9 w-full border border-white/10 bg-[#0d0f13] px-3 font-mono text-[10px] text-zinc-100 outline-none focus:border-primary/70"
+                  >
+                    <option value="">{midiInputs.length === 0 ? copy.noMidiDevices : copy.defaultDevice}</option>
+                    {midiInputs.map((input) => (
+                      <option key={input.id} value={input.id}>{input.name}</option>
                     ))}
                   </select>
                 </div>

@@ -5,6 +5,7 @@ import {
   formatDate,
   getAllBackendProjects,
   loadProjectFromBackend,
+  saveProjectToBackend,
   type ProjectData,
 } from '../editor/fileUtils';
 import { HeaderUtilityButtons } from '../ui/HeaderUtilityButtons';
@@ -14,6 +15,10 @@ export function ProjectManagerView() {
   const [searchText, setSearchText] = useState('');
   const [projects, setProjects] = useState<ProjectData[]>([]);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [editingProjectName, setEditingProjectName] = useState<string | null>(null);
+  const [nextProjectName, setNextProjectName] = useState('');
+  const [nextProjectDescription, setNextProjectDescription] = useState('');
+  const [isRenamingProject, setIsRenamingProject] = useState(false);
 
   const filteredProjects = useMemo(() => {
     const normalizedSearch = searchText.trim().toLowerCase();
@@ -24,6 +29,7 @@ export function ProjectManagerView() {
     return projects.filter((project) => {
       return (
         project.projectName.toLowerCase().includes(normalizedSearch) ||
+        project.description?.toLowerCase().includes(normalizedSearch) ||
         String(project.bpm).includes(normalizedSearch) ||
         String(project.tracks.length).includes(normalizedSearch)
       );
@@ -63,6 +69,60 @@ export function ProjectManagerView() {
     }
 
     navigate(`/editor?projectName=${encodeURIComponent(project.projectName)}&bpm=${encodeURIComponent(String(project.bpm))}`);
+  };
+
+  const startRename = (project: ProjectData) => {
+    setEditingProjectName(project.projectName);
+    setNextProjectName(project.projectName);
+    setNextProjectDescription(project.description ?? '');
+  };
+
+  const cancelRename = () => {
+    setEditingProjectName(null);
+    setNextProjectName('');
+    setNextProjectDescription('');
+  };
+
+  const handleRename = async (project: ProjectData) => {
+    const normalizedName = nextProjectName.trim();
+    if (!normalizedName) {
+      alert('프로젝트 제목을 입력해주세요.');
+      return;
+    }
+    if (projects.some((candidate) => (
+      candidate.projectName.toLowerCase() === normalizedName.toLowerCase()
+      && candidate.projectName !== project.projectName
+    ))) {
+      alert('같은 제목의 프로젝트가 이미 존재합니다.');
+      return;
+    }
+
+    setIsRenamingProject(true);
+    const isSaved = await saveProjectToBackend(
+      normalizedName,
+      project.tracks,
+      project.bpm,
+      nextProjectDescription,
+    );
+    if (!isSaved) {
+      setIsRenamingProject(false);
+      alert('새 제목으로 프로젝트를 저장하지 못했습니다.');
+      return;
+    }
+
+    if (normalizedName !== project.projectName) {
+      const isDeleted = await deleteProjectFromBackend(project.projectName);
+      if (!isDeleted) {
+        setIsRenamingProject(false);
+        alert('새 제목은 저장됐지만 기존 프로젝트 삭제에 실패했습니다.');
+        await refreshProjects();
+        return;
+      }
+    }
+
+    cancelRename();
+    setIsRenamingProject(false);
+    await refreshProjects();
   };
 
   return (
@@ -176,13 +236,48 @@ export function ProjectManagerView() {
               {filteredProjects.map((project) => (
                 <article key={project.projectName} className="bg-surface-container border border-outline/10 p-7 min-h-[360px] flex flex-col group transition-colors ghost-border">
                   <div className="flex justify-between items-start mb-4 gap-3">
-                    <h3 className="font-black text-lg tracking-tight truncate flex-1 text-white">
-                      {project.projectName}
-                    </h3>
+                    {editingProjectName === project.projectName ? (
+                      <input
+                        type="text"
+                        value={nextProjectName}
+                        onChange={(event) => setNextProjectName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            void handleRename(project);
+                          } else if (event.key === 'Escape') {
+                            cancelRename();
+                          }
+                        }}
+                        autoFocus
+                        disabled={isRenamingProject}
+                        className="min-w-0 flex-1 border border-primary/50 bg-[#101214] px-2 py-1 text-lg font-black tracking-tight text-white outline-none focus:border-primary disabled:opacity-50"
+                        aria-label="Project title"
+                      />
+                    ) : (
+                      <h3 className="font-black text-lg tracking-tight truncate flex-1 text-white">
+                        {project.projectName}
+                      </h3>
+                    )}
                     <span className="mono text-[10px] text-primary bg-primary/10 px-2 py-0.5 whitespace-nowrap uppercase">
                       Saved Project
                     </span>
                   </div>
+
+                  {editingProjectName === project.projectName ? (
+                    <textarea
+                      value={nextProjectDescription}
+                      onChange={(event) => setNextProjectDescription(event.target.value)}
+                      maxLength={500}
+                      placeholder="Project description"
+                      disabled={isRenamingProject}
+                      className="mb-5 min-h-20 w-full resize-y border border-outline/20 bg-[#101214] px-3 py-2 text-sm text-zinc-300 outline-none focus:border-primary disabled:opacity-50"
+                      aria-label="Project description"
+                    />
+                  ) : (
+                    <p className="mb-5 min-h-10 text-sm leading-relaxed text-zinc-400 line-clamp-2">
+                      {project.description || 'No description'}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-3 gap-4 mb-8">
                     <div className="flex flex-col">
@@ -205,19 +300,51 @@ export function ProjectManagerView() {
                   </div>
 
                   <div className="mt-5 flex gap-2">
-                    <button
-                      onClick={() => handleLoad(project.projectName)}
-                      className="flex-1 bg-primary text-black py-3 font-black text-[10px] tracking-widest uppercase active:scale-95 transition-transform"
-                    >
-                      Load Project
-                    </button>
-                    <button
-                      onClick={() => handleDelete(project.projectName)}
-                      className="w-10 bg-surface-bright flex items-center justify-center hover:bg-[#3a3a3a] transition-colors border border-outline/10 text-zinc-400 hover:text-white"
-                      title="Delete project"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">more_horiz</span>
-                    </button>
+                    {editingProjectName === project.projectName ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handleRename(project)}
+                          disabled={isRenamingProject}
+                          className="flex-1 bg-primary py-3 text-[10px] font-black uppercase tracking-widest text-black disabled:opacity-50"
+                        >
+                          {isRenamingProject ? 'Saving...' : 'Save Changes'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelRename}
+                          disabled={isRenamingProject}
+                          className="w-10 border border-outline/10 bg-surface-bright text-zinc-400 hover:text-white disabled:opacity-50"
+                          title="Cancel"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">close</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleLoad(project.projectName)}
+                          className="flex-1 bg-primary text-black py-3 font-black text-[10px] tracking-widest uppercase active:scale-95 transition-transform"
+                        >
+                          Load Project
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startRename(project)}
+                          className="w-10 bg-surface-bright flex items-center justify-center hover:bg-[#3a3a3a] transition-colors border border-outline/10 text-zinc-400 hover:text-white"
+                          title="Edit project"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">edit</span>
+                        </button>
+                        <button
+                          onClick={() => handleDelete(project.projectName)}
+                          className="w-10 bg-surface-bright flex items-center justify-center hover:bg-error transition-colors border border-outline/10 text-zinc-400 hover:text-black"
+                          title="Delete project"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               ))}

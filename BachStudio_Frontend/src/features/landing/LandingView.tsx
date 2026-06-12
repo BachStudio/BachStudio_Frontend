@@ -96,10 +96,15 @@ export function LandingView({
       </header>
 
       <main className="mt-12 mb-6 flex-grow bg-surface-container-lowest">
-        <section className="relative h-[665px] w-full flex items-center px-12 overflow-hidden bg-surface-container-low">
-          <div className="absolute inset-0 opacity-20 pointer-events-none">
-            <div className="absolute inset-0 bg-gradient-to-r from-background to-transparent z-10"></div>
-            <img alt="Studio visual" className="w-full h-full object-cover" data-alt="Close-up of a professional mixing console in a dark studio with glowing green and yellow LEDs and linear sliders" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCFWzRwm6I-E5r6oNpHmyOHv85zK6o9XHgxX6M7GhxftZApeQ5K970Iv0jNSxMMKFKFrRf_jrIWVnH7oPDle3vlduHAfP_YMGT9AwlmpwQiLr5euofb1kIKUCAfET0RZP_PADNmch61O-MTIMlaNEgN8sK8EFvkBVWmgSpZFSJwqYYPNv2AJ8eWtljX8itV3sKayP9TiYl684ZfVC9ibreRTODBclojyMKGmHv8sb0NYy_uP6IhJh6uowJAGJyf8_K1IOobZxgcHwhn" />
+        <section className="relative h-[665px] w-full flex items-center px-12 overflow-hidden bg-[#101214]">
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <img
+              src="/assets/humming-ai-panel.png"
+              alt=""
+              className="absolute right-[7%] top-1/2 h-[112%] w-auto -translate-y-1/2 opacity-70"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#101214] via-[#101214]/90 to-[#101214]/30"></div>
+            <div className="absolute inset-0 bg-black/5"></div>
           </div>
           <div className="relative z-20 max-w-2xl">
             <div className="inline-block bg-primary text-on-primary px-2 py-0.5 font-mono text-[10px] font-bold tracking-widest uppercase mb-4">

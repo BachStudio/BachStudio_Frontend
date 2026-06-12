@@ -24,6 +24,7 @@ export default function App() {
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [projectName, setProjectName] = useState('');
+  const [projectDescription, setProjectDescription] = useState('');
   const [projectBpm, setProjectBpm] = useState('128');
   const [authSession, setAuthSession] = useState(() => getStoredAuth());
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -51,6 +52,7 @@ export default function App() {
     }
 
     setProjectName(generateUniqueName());
+    setProjectDescription('');
     setIsModalOpen(true);
   };
 
@@ -76,7 +78,7 @@ export default function App() {
     const normalizedBpm = Number.isFinite(parsedBpm) ? String(parsedBpm) : '128';
 
     setIsModalOpen(false);
-    navigate(`/editor?projectName=${encodeURIComponent(normalizedName)}&bpm=${encodeURIComponent(normalizedBpm)}`);
+    navigate(`/editor?projectName=${encodeURIComponent(normalizedName)}&bpm=${encodeURIComponent(normalizedBpm)}&description=${encodeURIComponent(projectDescription.trim())}`);
   };
 
   const handleGoogleLogin = async () => {
@@ -120,10 +122,12 @@ export default function App() {
             <NewProjectModal
               isOpen={isModalOpen}
               projectName={projectName}
+              projectDescription={projectDescription}
               projectBpm={projectBpm}
               onClose={() => setIsModalOpen(false)}
               onStart={handleStart}
               onProjectNameChange={setProjectName}
+              onProjectDescriptionChange={setProjectDescription}
               onProjectBpmChange={setProjectBpm}
             />
           </>

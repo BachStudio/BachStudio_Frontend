@@ -9,6 +9,12 @@ import {
 import type { Note, PianoRow, PianoTool, SelectionBox } from './types';
 import { getHummingStreamUrl, transcribeHummingAudio } from './fileUtils';
 import type { HummingStreamEvent } from './fileUtils';
+import {
+  DEVICE_SETTINGS_CHANGE_EVENT,
+  getDeviceSettings,
+  setDeviceSettings,
+  type AudioDeviceSettings,
+} from '../ui/deviceSettings';
 
 type PianoRollOverlayProps = {
   isOpen: boolean;
@@ -38,6 +44,7 @@ type PianoRollOverlayProps = {
   ) => void;
   onDeleteNote: (noteId: number) => void;
   onStartRealtimeHumming: () => boolean;
+  onRealtimeHummingProgress: (beat: number) => void;
   onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
 };
 
@@ -65,6 +72,7 @@ const HUMMING_NOTE_UI_UPDATE_MS = 160;
 const HUMMING_SOCKET_OPEN_TIMEOUT_MS = 8000;
 const HUMMING_BACKEND_READY_TIMEOUT_MS = 20000;
 const HUMMING_AUTOSCROLL_UPDATE_MS = 120;
+const HUMMING_CLIP_GROWTH_UPDATE_MS = 240;
 
 const HUMMING_AUDIO_WORKLET = `
 class HummingAudioProcessor extends AudioWorkletProcessor {
@@ -151,13 +159,14 @@ export function PianoRollOverlay({
   onNoteMouseDown,
   onDeleteNote,
   onStartRealtimeHumming,
+  onRealtimeHummingProgress,
   onRealtimeHummingEvent,
 }: PianoRollOverlayProps) {
   const [isHummingPanelOpen, setIsHummingPanelOpen] = useState(false);
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [hummingError, setHummingError] = useState('');
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
+  const [selectedInputDeviceId, setSelectedInputDeviceId] = useState(() => getDeviceSettings().inputDeviceId);
   const [detectedNoteLabel, setDetectedNoteLabel] = useState('D3');
   const [pitchConfidence, setPitchConfidence] = useState<number | null>(null);
   const [detectedKey, setDetectedKey] = useState('--');
@@ -177,6 +186,7 @@ export function PianoRollOverlay({
   const lastBackendPitchLogRef = useRef(0);
   const lastRecordingBeatUiUpdateRef = useRef(0);
   const lastAutoScrollUpdateRef = useRef(0);
+  const lastClipGrowthUpdateRef = useRef(0);
   const lastPitchUiUpdateRef = useRef(0);
   const lastNoteUiUpdateRef = useRef(0);
   const stopFallbackTimerRef = useRef<number | null>(null);
@@ -199,13 +209,18 @@ export function PianoRollOverlay({
     const nextBeat = Math.max(0, beat);
     currentRecordingBeatRef.current = nextBeat;
 
-    const maxLeft = Math.max(gridTotalCols * GRID_COL_WIDTH - 2, 0);
+    const currentGridWidth = Math.max(
+      gridRef.current?.scrollWidth ?? 0,
+      gridTotalCols * GRID_COL_WIDTH,
+    );
+    const maxLeft = Math.max(currentGridWidth - 2, 0);
     const left = Math.min(Math.max(nextBeat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH, 0), maxLeft);
     if (livePlayheadRef.current) {
       livePlayheadRef.current.style.transform = `translateX(${left}px)`;
     }
 
-    const visibleLengthBeats = Math.max(clipLengthBeats, nextBeat + 0.25, 0.25);
+    const visibleGridBeats = currentGridWidth / (PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH);
+    const visibleLengthBeats = Math.max(clipLengthBeats, visibleGridBeats, nextBeat + 0.25, 0.25);
     const progressPercent = recordingStateRef.current === 'idle'
       ? 4
       : Math.max(Math.min((nextBeat / visibleLengthBeats) * 100, 100), 4);
@@ -214,6 +229,14 @@ export function PianoRollOverlay({
     }
 
     const now = performance.now();
+    if (
+      recordingStateRef.current === 'recording'
+      && now - lastClipGrowthUpdateRef.current >= HUMMING_CLIP_GROWTH_UPDATE_MS
+    ) {
+      lastClipGrowthUpdateRef.current = now;
+      onRealtimeHummingProgress(nextBeat);
+    }
+
     if (
       recordingStateRef.current === 'recording'
       && gridRef.current
@@ -251,6 +274,7 @@ export function PianoRollOverlay({
     recordingStartTimeRef.current = performance.now();
     lastRecordingBeatUiUpdateRef.current = 0;
     lastAutoScrollUpdateRef.current = 0;
+    lastClipGrowthUpdateRef.current = 0;
     applyRecordingBeat(0);
 
     const tick = () => {
@@ -688,6 +712,16 @@ export function PianoRollOverlay({
   }, [isHummingPanelOpen]);
 
   useEffect(() => {
+    const handleDeviceSettingsChange = (event: Event) => {
+      const settings = (event as CustomEvent<AudioDeviceSettings>).detail ?? getDeviceSettings();
+      setSelectedInputDeviceId(settings.inputDeviceId);
+    };
+
+    window.addEventListener(DEVICE_SETTINGS_CHANGE_EVENT, handleDeviceSettingsChange);
+    return () => window.removeEventListener(DEVICE_SETTINGS_CHANGE_EVENT, handleDeviceSettingsChange);
+  }, []);
+
+  useEffect(() => {
     if (!navigator.mediaDevices?.addEventListener) {
       return;
     }
@@ -810,11 +844,9 @@ export function PianoRollOverlay({
                 onMouseDown={onGridMouseDown}
                 onDoubleClick={onGridDoubleClick}
                 onScroll={() => onSyncVerticalScroll('grid')}
-                className="flex-1 relative overflow-auto select-none"
+                className="flex-1 relative overflow-auto select-none no-scrollbar"
                 style={{
                   cursor: pianoTool === 'draw' ? 'crosshair' : 'default',
-                  backgroundSize: '40px 24px',
-                  backgroundImage: 'linear-gradient(to right, #262626 1px, transparent 1px)',
                 }}
               >
                 <div
@@ -822,6 +854,8 @@ export function PianoRollOverlay({
                   style={{
                     width: `${gridTotalCols * GRID_COL_WIDTH}px`,
                     height: `${GRID_TOTAL_ROWS * GRID_ROW_HEIGHT}px`,
+                    backgroundSize: `${GRID_COL_WIDTH}px ${GRID_ROW_HEIGHT}px`,
+                    backgroundImage: 'linear-gradient(to right, #262626 1px, transparent 1px)',
                   }}
                 >
                   <div className="absolute inset-0 pointer-events-none z-0">
@@ -882,7 +916,6 @@ export function PianoRollOverlay({
                       }}
                       title="Select mode: click to select, drag to move, drag right resize handle to resize, right-click to delete"
                     >
-                      NOTE
                       {pianoTool === 'select' && (
                         <span
                           onMouseDown={(event) => {
@@ -902,7 +935,7 @@ export function PianoRollOverlay({
             <aside
               className={`absolute top-0 right-0 h-full w-[360px] border-l border-white/10 bg-[#14171d]/95 backdrop-blur-md shadow-[-24px_0_40px_rgba(0,0,0,0.45)] transition-transform duration-300 ease-out ${isHummingPanelOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full pointer-events-none'}`}
             >
-              <div className="h-full flex flex-col px-5 py-4 gap-4 overflow-y-auto">
+              <div className="h-full flex flex-col px-5 py-4 gap-4 overflow-y-auto no-scrollbar">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-[#ff9ba4]">graphic_eq</span>
@@ -922,7 +955,11 @@ export function PianoRollOverlay({
                   <span className="text-[8px] font-bold uppercase tracking-widest text-zinc-500">Input Device</span>
                   <select
                     value={selectedInputDeviceId}
-                    onChange={(event) => setSelectedInputDeviceId(event.target.value)}
+                    onChange={(event) => {
+                      const inputDeviceId = event.target.value;
+                      setSelectedInputDeviceId(inputDeviceId);
+                      setDeviceSettings({ ...getDeviceSettings(), inputDeviceId });
+                    }}
                     disabled={recordingState !== 'idle'}
                     className="h-9 bg-[#191c23] border border-white/10 text-[10px] font-mono uppercase tracking-wider text-[#f3f5fb] px-2 outline-none focus:border-[#ff9ba4]/70 disabled:opacity-50"
                   >
