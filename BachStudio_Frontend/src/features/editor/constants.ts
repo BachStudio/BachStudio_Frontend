@@ -61,6 +61,8 @@ export const DRUM_KIT_OPTIONS: DrumKitOption[] = [
   { id: 'acoustic', label: 'Acoustic Kit', subtitle: 'Warm Kick / Snare / Hat' },
   { id: 'electro', label: 'Electro Kit', subtitle: 'Punchy Electronic Percussion' },
   { id: 'trap808', label: '808 Kit', subtitle: 'Deep Kick / Tight Hat' },
+  { id: 'synthwave', label: 'Synthwave Kit', subtitle: 'Gated Snare / Retro Kick' },
+  { id: 'jazz', label: 'Jazz Kit', subtitle: 'Brushed Snare / Acoustic Tone' },
 ];
 
 export const AUDIO_SOURCE_OPTIONS: AudioSourceOption[] = [
@@ -98,6 +100,8 @@ export const DRUM_OUTPUT_COMP_DB = {
   acoustic: -9,
   electro: -11,
   trap808: -12,
+  synthwave: -10,
+  jazz: -9,
 } as const;
 
 export const AUDIO_OUTPUT_COMP_DB = {

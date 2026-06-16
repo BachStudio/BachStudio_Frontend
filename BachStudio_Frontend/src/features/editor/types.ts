@@ -7,7 +7,7 @@ export type Note = {
 
 export type TrackType = 'Instrument' | 'Drums' | 'Audio' | 'Bus';
 export type InstrumentPresetId = 'piano' | 'analog' | 'organ' | 'bass' | 'elec_guitar' | 'elec_bass' | 'elec_piano';
-export type DrumKitId = 'acoustic' | 'electro' | 'trap808';
+export type DrumKitId = 'acoustic' | 'electro' | 'trap808' | 'synthwave' | 'jazz';
 export type AudioSourceId = 'vocal_chop' | 'guitar_hit' | 'fx_riser';
 
 export type Clip = {
@@ -18,6 +18,7 @@ export type Clip = {
   audioDataUrl?: string;
   audioMimeType?: string;
   audioPreview?: number[];
+  audioStartOffset?: number;
 };
 
 export type Track = {

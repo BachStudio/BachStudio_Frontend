@@ -59,6 +59,7 @@ type PlaybackNoteEvent = {
   drumKitId: Track['drumKitId'];
   audioSourceId: AudioSourceId;
   audioDataUrl?: string;
+  audioStartOffset?: number;
   effectiveVolumeDb: number;
 };
 
@@ -136,6 +137,8 @@ export function MainEditor() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [pianoTool, setPianoTool] = useState<PianoTool>('select');
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
+  const [quantize, setQuantize] = useState<'1/16' | '1/8' | '1/4'>('1/16');
+  const [copiedNotes, setCopiedNotes] = useState<Note[] | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [clipDragState, setClipDragState] = useState<null | {
     trackId: number;
@@ -782,6 +785,20 @@ export function MainEditor() {
       return;
     }
 
+    if (kitId === 'synthwave') {
+      snareSynthRef.current.set({ noise: { type: 'pink' }, envelope: { decay: 0.3 } });
+      hatSynthRef.current.set({ harmonicity: 6.0, modulationIndex: 35, resonance: 5000 });
+      clapSynthRef.current.set({ noise: { type: 'pink' }, envelope: { decay: 0.2 } });
+      return;
+    }
+
+    if (kitId === 'jazz') {
+      snareSynthRef.current.set({ noise: { type: 'white' }, envelope: { decay: 0.08 } });
+      hatSynthRef.current.set({ harmonicity: 3.5, modulationIndex: 15, resonance: 2000 });
+      clapSynthRef.current.set({ noise: { type: 'pink' }, envelope: { decay: 0.06 } });
+      return;
+    }
+
     snareSynthRef.current.set({ noise: { type: 'white' }, envelope: { decay: 0.18 } });
     hatSynthRef.current.set({ harmonicity: 5.1, modulationIndex: 32, resonance: 4200 });
     clapSynthRef.current.set({ noise: { type: 'pink' }, envelope: { decay: 0.12 } });
@@ -862,7 +879,7 @@ export function MainEditor() {
 
     if (lane === 'kick') {
       routeSourceToTrack(kickSynthRef.current, trackId);
-      const kickNote = kitId === 'trap808' ? 'C1' : kitId === 'acoustic' ? 'D1' : 'E1';
+      const kickNote = kitId === 'trap808' ? 'C1' : kitId === 'acoustic' ? 'D1' : kitId === 'synthwave' ? 'D1' : kitId === 'jazz' ? 'G1' : 'E1';
       kickSynthRef.current.triggerAttackRelease(kickNote, Math.max(0.08, durationSeconds), undefined, velocity);
       return;
     }
@@ -889,6 +906,7 @@ export function MainEditor() {
     audioDataUrl: string | undefined,
     durationSeconds: number,
     compensatedVolumeDb: number,
+    offsetSeconds = 0,
   ) => {
     const player = audioDataUrl
       ? recordedAudioPlayersRef.current.get(audioDataUrl)
@@ -899,12 +917,13 @@ export function MainEditor() {
 
     routeSourceToTrack(player, trackId);
     player.volume.value = compensatedVolumeDb;
-    player.start(undefined, 0, Math.max(0.1, durationSeconds));
+    player.start(undefined, offsetSeconds, Math.max(0.1, durationSeconds));
   };
 
   const triggerPlaybackEvent = (event: PlaybackNoteEvent) => {
     const compensatedDb = event.effectiveVolumeDb + getEventOutputCompDb(event);
     const velocity = dbToVelocity(compensatedDb);
+    const beatSeconds = 60 / bpm;
 
     if (event.trackType === 'Instrument' && event.pitch !== null) {
       triggerInstrumentNote(event.trackId, event.instrumentPresetId, event.pitch, event.durationSeconds, velocity);
@@ -917,7 +936,14 @@ export function MainEditor() {
     }
 
     if (event.trackType === 'Audio') {
-      triggerAudioClip(event.trackId, event.audioSourceId, event.audioDataUrl, event.durationSeconds, compensatedDb);
+      triggerAudioClip(
+        event.trackId,
+        event.audioSourceId,
+        event.audioDataUrl,
+        event.durationSeconds,
+        compensatedDb,
+        event.audioStartOffset ? event.audioStartOffset * beatSeconds : 0
+      );
     }
   };
 
@@ -973,6 +999,7 @@ export function MainEditor() {
               drumKitId: track.drumKitId,
               audioSourceId: track.audioSourceId,
               audioDataUrl: clip.audioDataUrl,
+              audioStartOffset: clip.audioStartOffset,
               effectiveVolumeDb,
             });
           }
@@ -1027,7 +1054,7 @@ export function MainEditor() {
     if (isMetronomeOn) {
       const start = session.startBeat;
       const lastTick = session.lastMetronomeBeat ?? (start - 0.0001);
-      const startIntegerBeat = Math.ceil(lastTick);
+      const startIntegerBeat = Math.floor(lastTick) + 1;
       const endIntegerBeat = Math.floor(currentBeat);
 
       for (let beat = startIntegerBeat; beat <= endIntegerBeat; beat++) {
@@ -1099,12 +1126,38 @@ export function MainEditor() {
     runPlaybackFrame();
   };
 
+  const silenceAllPlaybackEngines = () => {
+    Object.values(audioPlayersRef.current).forEach((player) => {
+      if (player && player.state === 'started') {
+        player.stop();
+      }
+    });
+    recordedAudioPlayersRef.current.forEach((player) => {
+      if (player && player.state === 'started') {
+        player.stop();
+      }
+    });
+
+    samplerRef.current?.releaseAll();
+    elecGuitarSamplerRef.current?.releaseAll();
+    elecBassSamplerRef.current?.releaseAll();
+    elecPianoSynthRef.current?.releaseAll();
+    analogSynthRef.current?.releaseAll();
+    organSynthRef.current?.releaseAll();
+    bassSynthRef.current?.triggerRelease();
+    kickSynthRef.current?.triggerRelease();
+    snareSynthRef.current?.triggerRelease();
+    hatSynthRef.current?.triggerRelease();
+    clapSynthRef.current?.triggerRelease();
+  };
+
   const pausePlayback = () => {
     const currentBeat = getCurrentSessionBeat();
     setPlayheadBeat(currentBeat);
     setIsPlaying(false);
     playbackSessionRef.current = null;
     cancelPlaybackTimer();
+    silenceAllPlaybackEngines();
   };
 
   const stopPlayback = () => {
@@ -1112,6 +1165,7 @@ export function MainEditor() {
     setPlayheadBeat(0);
     playbackSessionRef.current = null;
     cancelPlaybackTimer();
+    silenceAllPlaybackEngines();
   };
 
   const handlePlayToggle = () => {
@@ -1246,6 +1300,144 @@ export function MainEditor() {
       trackId: selectedTrack.id,
       clipId: seed + 1,
     });
+  };
+
+  const handleCopySelectedNotes = () => {
+    if (selectedNoteIds.length === 0) return;
+    const notesToCopy = activeTrackNotes.filter((note) => selectedNoteIds.includes(note.id));
+    setCopiedNotes(notesToCopy.map((note) => ({ ...note })));
+  };
+
+  const handlePasteNotes = () => {
+    if (!copiedNotes || copiedNotes.length === 0 || !activeClip) return;
+    const minStart = Math.min(...copiedNotes.map((n) => n.start));
+    
+    const playheadStep = Math.round((playheadBeat - activeClip.start) * PIANO_STEPS_PER_BEAT);
+    const anchorStep = clamp(playheadStep, 0, activeClipTotalCols - 1);
+    
+    const seed = Date.now();
+    const newNotes: Note[] = [];
+    const newSelectedIds: number[] = [];
+
+    copiedNotes.forEach((n, idx) => {
+      const relativeStart = n.start - minStart;
+      const nextStart = anchorStep + relativeStart;
+      if (nextStart < activeClipTotalCols) {
+        const nextId = seed + idx + Math.floor(Math.random() * 1000);
+        const length = Math.min(n.length, activeClipTotalCols - nextStart);
+        newNotes.push({
+          id: nextId,
+          start: nextStart,
+          pitch: n.pitch,
+          length: Math.max(1, length),
+        });
+        newSelectedIds.push(nextId);
+      }
+    });
+
+    if (newNotes.length > 0) {
+      updateActiveClipNotes((notes) => [...notes, ...newNotes]);
+      setSelectedNoteIds(newSelectedIds);
+    }
+  };
+
+  const handleDeleteTrack = (trackId: number) => {
+    recordHistory();
+    setTracks((prev) => prev.filter((track) => track.id !== trackId));
+    if (selectedTrackId === trackId) {
+      setSelectedTrackId(null);
+      setSelectedTimelineClip(null);
+    }
+  };
+
+  const handleSplitClip = (trackId: number, clipId: number, splitBeat: number) => {
+    recordHistory();
+    setTracks((prev) =>
+      prev.map((track) => {
+        if (track.id !== trackId) return track;
+        const targetClip = track.clips.find((c) => c.id === clipId);
+        if (!targetClip) return track;
+
+        if (splitBeat <= targetClip.start || splitBeat >= targetClip.start + targetClip.length) {
+          return track;
+        }
+
+        const leftLength = splitBeat - targetClip.start;
+        const rightLength = targetClip.start + targetClip.length - splitBeat;
+
+        const leftClip: Clip = {
+          ...targetClip,
+          id: Date.now(),
+          length: leftLength,
+          notes: targetClip.notes
+            .filter((n) => n.start < leftLength * PIANO_STEPS_PER_BEAT)
+            .map((n) => ({ ...n })),
+          audioStartOffset: targetClip.audioStartOffset || 0,
+        };
+
+        const rightClipStartOffset = (targetClip.audioStartOffset || 0) + leftLength;
+        const rightClip: Clip = {
+          ...targetClip,
+          id: Date.now() + 1,
+          start: splitBeat,
+          length: rightLength,
+          notes: targetClip.notes
+            .filter((n) => n.start >= leftLength * PIANO_STEPS_PER_BEAT)
+            .map((n) => ({
+              ...n,
+              id: n.id + 1000 + Math.floor(Math.random() * 1000),
+              start: n.start - Math.round(leftLength * PIANO_STEPS_PER_BEAT),
+            })),
+          audioStartOffset: rightClipStartOffset,
+        };
+
+        const otherClips = track.clips.filter((c) => c.id !== clipId);
+        return {
+          ...track,
+          clips: [...otherClips, leftClip, rightClip].sort((a, b) => a.start - b.start),
+        };
+      })
+    );
+  };
+
+  const handleMergeClipWithNext = (trackId: number, clipId: number) => {
+    recordHistory();
+    setTracks((prev) =>
+      prev.map((track) => {
+        if (track.id !== trackId) return track;
+        const clips = [...track.clips].sort((a, b) => a.start - b.start);
+        const clipIndex = clips.findIndex((c) => c.id === clipId);
+        if (clipIndex === -1 || clipIndex === clips.length - 1) return track;
+
+        const leftClip = clips[clipIndex];
+        const rightClip = clips[clipIndex + 1];
+
+        const mergedNotes = [
+          ...leftClip.notes.map((n) => ({ ...n })),
+          ...rightClip.notes.map((n) => ({
+            ...n,
+            id: n.id + 2000 + Math.floor(Math.random() * 1000),
+            start: n.start + Math.round((rightClip.start - leftClip.start) * PIANO_STEPS_PER_BEAT),
+          })),
+        ];
+
+        const mergedLength = rightClip.start + rightClip.length - leftClip.start;
+
+        const mergedClip: Clip = {
+          ...leftClip,
+          id: Date.now(),
+          length: mergedLength,
+          notes: mergedNotes,
+          audioStartOffset: leftClip.audioStartOffset || 0,
+        };
+
+        const otherClips = clips.filter((c) => c.id !== leftClip.id && c.id !== rightClip.id);
+        return {
+          ...track,
+          clips: [...otherClips, mergedClip].sort((a, b) => a.start - b.start),
+        };
+      })
+    );
   };
 
   const handleDeleteTimelineClip = (trackId: number, clipId: number) => {
@@ -1975,15 +2167,24 @@ export function MainEditor() {
         return;
       }
 
-      if (isCopy && selectedTrack && canUsePianoRoll(selectedTrack)) {
+      if (isCopy) {
         event.preventDefault();
-        handleCopySelectedMidiTrack();
+        if (isPianoRollOpen) {
+          handleCopySelectedNotes();
+        } else if (selectedTrack && canUsePianoRoll(selectedTrack)) {
+          handleCopySelectedMidiTrack();
+        }
         return;
       }
 
-      if (isPaste && copiedMidiChunk && selectedTrack && canUsePianoRoll(selectedTrack)) {
+      if (isPaste) {
         event.preventDefault();
-        handlePasteMidiTrack();
+        if (isPianoRollOpen) {
+          handlePasteNotes();
+        } else if (copiedMidiChunk && selectedTrack && canUsePianoRoll(selectedTrack)) {
+          handlePasteMidiTrack();
+        }
+        return;
       }
     };
 
@@ -1994,6 +2195,7 @@ export function MainEditor() {
   }, [
     selectedTrack,
     copiedMidiChunk,
+    copiedNotes,
     selectedTimelineClip,
     selectedNoteIds,
     isPianoRollOpen,
@@ -2002,6 +2204,8 @@ export function MainEditor() {
     bpm,
     handleCopySelectedMidiTrack,
     handlePasteMidiTrack,
+    handleCopySelectedNotes,
+    handlePasteNotes,
     handleDeleteSelectedTimelineClip,
     handleDeleteSelectedPianoNotes,
     handleSaveProject,
@@ -2050,6 +2254,16 @@ export function MainEditor() {
     setTracks((prev) => prev.map((track) => (track.id === trackId ? updater(track) : track)));
   };
 
+  const getQuantizeSteps = (quantValue: '1/16' | '1/8' | '1/4'): number => {
+    switch (quantValue) {
+      case '1/8': return 2;
+      case '1/4': return 4;
+      case '1/16':
+      default:
+        return 1;
+    }
+  };
+
   const getPointerInGrid = (clientX: number, clientY: number, totalCols: number) => {
     if (!gridRef.current) {
       return { x: 0, y: 0 };
@@ -2057,7 +2271,7 @@ export function MainEditor() {
 
     const rect = gridRef.current.getBoundingClientRect();
     const x = clientX - rect.left + gridRef.current.scrollLeft;
-    const y = clientY - rect.top + gridRef.current.scrollTop;
+    const y = clientY - rect.top + gridRef.current.scrollTop - 24;
 
     return {
       x: clamp(Math.floor(x), 0, totalCols * GRID_COL_WIDTH),
@@ -2312,11 +2526,25 @@ export function MainEditor() {
   };
 
   const handleToggleTrackMute = (trackId: number) => {
-    updateTrackById(trackId, (track) => ({ ...track, muted: track.muted !== true }));
+    updateTrackById(trackId, (track) => {
+      const nextMuted = track.muted !== true;
+      return {
+        ...track,
+        muted: nextMuted,
+        soloed: nextMuted ? false : track.soloed,
+      };
+    });
   };
 
   const handleToggleTrackSolo = (trackId: number) => {
-    updateTrackById(trackId, (track) => ({ ...track, soloed: track.soloed !== true }));
+    updateTrackById(trackId, (track) => {
+      const nextSoloed = track.soloed !== true;
+      return {
+        ...track,
+        soloed: nextSoloed,
+        muted: nextSoloed ? false : track.muted,
+      };
+    });
   };
 
   const handleSelectedTrackVolumeChange = (rawValue: string) => {
@@ -2597,7 +2825,12 @@ export function MainEditor() {
       const preferredMimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
         .find((mimeType) => MediaRecorder.isTypeSupported(mimeType));
       const recorder = new MediaRecorder(stream, preferredMimeType ? { mimeType: preferredMimeType } : undefined);
-      const startBeat = clamp(playheadBeat, 0, TIMELINE_TOTAL_BEATS - 0.25);
+      
+      const activeSession = playbackSessionRef.current;
+      const liveBeat = activeSession 
+        ? clamp(activeSession.startBeat + ((performance.now() - activeSession.startWallTime) / 1000 * activeSession.bpm) / 60, 0, TIMELINE_TOTAL_BEATS)
+        : playheadBeat;
+      const startBeat = clamp(liveBeat, 0, TIMELINE_TOTAL_BEATS - 0.25);
       const trackId = selectedTrack.id;
 
       recordHistory();
@@ -2874,11 +3107,13 @@ export function MainEditor() {
 
     const rect = gridRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
-    const y = event.clientY - rect.top + gridRef.current.scrollTop;
-    const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
+    const y = event.clientY - rect.top + gridRef.current.scrollTop - 24;
+    const steps = getQuantizeSteps(quantize);
+    const rawStart = Math.floor(x / GRID_COL_WIDTH);
+    const snappedStart = clamp(Math.round(rawStart / steps) * steps, 0, activeClipTotalCols - steps);
     const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
-    const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
+    const createdLength = Math.min(Math.max(steps, 2), activeClipTotalCols - snappedStart);
 
     updateActiveClipNotes((notes) => [
       ...notes,
@@ -2905,11 +3140,13 @@ export function MainEditor() {
 
     const rect = gridRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
-    const y = event.clientY - rect.top + gridRef.current.scrollTop;
-    const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
+    const y = event.clientY - rect.top + gridRef.current.scrollTop - 24;
+    const steps = getQuantizeSteps(quantize);
+    const rawStart = Math.floor(x / GRID_COL_WIDTH);
+    const snappedStart = clamp(Math.round(rawStart / steps) * steps, 0, activeClipTotalCols - steps);
     const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
-    const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
+    const createdLength = Math.min(Math.max(steps, 2), activeClipTotalCols - snappedStart);
 
     updateActiveClipNotes((notes) => [
       ...notes,
@@ -2992,16 +3229,21 @@ export function MainEditor() {
             return note;
           }
 
+          const steps = getQuantizeSteps(quantize);
           if (dragState.mode === 'resize') {
+            const rawLength = origin.length + deltaCols;
+            const snappedLength = Math.round(rawLength / steps) * steps;
             return {
               ...note,
-              length: clamp(origin.length + deltaCols, 1, maxCols - origin.start),
+              length: clamp(snappedLength, steps, maxCols - origin.start),
             };
           }
 
+          const rawStart = origin.start + deltaCols;
+          const snappedStart = Math.round(rawStart / steps) * steps;
           return {
             ...note,
-            start: clamp(origin.start + deltaCols, 0, maxCols - origin.length),
+            start: clamp(snappedStart, 0, maxCols - origin.length),
             pitch: clamp(origin.pitch + deltaRows, 0, pianoRows.length - 1),
           };
         }),
@@ -3020,7 +3262,7 @@ export function MainEditor() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols, pianoRows]);
+  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols, pianoRows, quantize]);
 
   useEffect(() => {
     if (!clipDragState) {
@@ -3331,10 +3573,10 @@ export function MainEditor() {
                   onFocus={recordHistory}
                   onChange={(event) => handleSelectedTrackNameChange(event.target.value)}
                   onBlur={handleSelectedTrackNameBlur}
-                  className="w-44 bg-transparent text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap outline-none border-b border-transparent focus:border-primary/60"
+                  className="w-48 bg-transparent text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap outline-none border-b border-transparent focus:border-primary/60"
                   title="Edit track name"
                 />
-                <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">
+                <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider whitespace-nowrap">
                   {selectedTrack.type === 'Audio' ? 'Voice Recording Track' : selectedTrack.type === 'Drums' ? 'Drums Sequencer Track' : 'Piano Instrument Track'}
                 </span>
               </div>
@@ -3474,6 +3716,9 @@ export function MainEditor() {
             onClipDoubleClick={handleClipDoubleClick}
             onClipResizeMouseDown={handleClipResizeMouseDown}
             onDeleteClip={handleDeleteTimelineClip}
+            onDeleteTrack={handleDeleteTrack}
+            onSplitClip={handleSplitClip}
+            onMergeClipWithNext={handleMergeClipWithNext}
           />
         </main>
       )}
@@ -3513,6 +3758,8 @@ export function MainEditor() {
         onRealtimeHummingProgress={handleRealtimeHummingProgress}
         onRealtimeHummingEvent={handleRealtimeHummingEvent}
         onStopPlayback={stopPlayback}
+        quantize={quantize}
+        onQuantizeChange={setQuantize}
       />
 
       {saveNotification.visible && (

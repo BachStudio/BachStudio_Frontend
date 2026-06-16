@@ -33,6 +33,9 @@ type TimelinePanelProps = {
   onClipDoubleClick: (event: ReactMouseEvent<HTMLDivElement>, trackId: number, clipId: number) => void;
   onClipResizeMouseDown: (event: ReactMouseEvent<HTMLSpanElement>, trackId: number, clip: Clip) => void;
   onDeleteClip: (trackId: number, clipId: number) => void;
+  onDeleteTrack?: (trackId: number) => void;
+  onSplitClip?: (trackId: number, clipId: number, splitBeat: number) => void;
+  onMergeClipWithNext?: (trackId: number, clipId: number) => void;
 };
 
 type LoopDragState = {
@@ -68,8 +71,27 @@ export function TimelinePanel({
   onClipDoubleClick,
   onClipResizeMouseDown,
   onDeleteClip,
+  onDeleteTrack,
+  onSplitClip,
+  onMergeClipWithNext,
 }: TimelinePanelProps) {
   const [loopDragState, setLoopDragState] = useState<LoopDragState | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    trackId: number;
+    clip: Clip;
+    clickBeat: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleClose = () => setContextMenu(null);
+    if (contextMenu) {
+      window.addEventListener('click', handleClose);
+    }
+    return () => window.removeEventListener('click', handleClose);
+  }, [contextMenu]);
+
   const rulerRef = useRef<HTMLDivElement | null>(null);
   const horizontalScrollRefs = useRef<Array<HTMLDivElement | null>>([]);
   const isSyncingHorizontalScrollRef = useRef(false);
@@ -404,6 +426,19 @@ export function TimelinePanel({
                 >
                   S
                 </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (confirm('Are you sure you want to delete this track?')) {
+                      onDeleteTrack?.(track.id);
+                    }
+                  }}
+                  className="w-8 h-4 flex items-center justify-center text-[7px] font-bold border bg-surface-bright border-transparent hover:border-error/50 hover:bg-error/15 hover:text-error transition-all"
+                  title="Delete track"
+                >
+                  DEL
+                </button>
               </div>
             </div>
 
@@ -476,6 +511,22 @@ export function TimelinePanel({
                   onClick={(event) => event.stopPropagation()}
                   onMouseDown={(event) => onClipMouseDown(event, track.id, clip)}
                   onDoubleClick={(event) => onClipDoubleClick(event, track.id, clip.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const clickX = event.clientX - rect.left;
+                    const clickBeat = clip.start + clickX / TIMELINE_BEAT_WIDTH_PX;
+                    const snappedClickBeat = Math.round(clickBeat * 4) / 4;
+
+                    setContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      trackId: track.id,
+                      clip,
+                      clickBeat: snappedClickBeat,
+                    });
+                  }}
                   onKeyDown={(event) => {
                     if (event.key !== 'Delete' && event.key !== 'Backspace') {
                       return;
@@ -607,6 +658,56 @@ export function TimelinePanel({
           )}
         </div>
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed bg-[#171717] border border-[#2d2d2d] rounded shadow-lg py-1 z-[100] text-[10px] uppercase tracking-wider font-mono text-zinc-300 min-w-[170px] pointer-events-auto"
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              onSplitClip?.(contextMenu.trackId, contextMenu.clip.id, playheadBeat);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-[#ff9ba4] hover:text-black transition-colors flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[12px]">content_cut</span>
+            Split at Playhead
+          </button>
+          <button
+            onClick={() => {
+              onSplitClip?.(contextMenu.trackId, contextMenu.clip.id, contextMenu.clickBeat);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-[#ff9ba4] hover:text-black transition-colors flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[12px]">content_cut</span>
+            Split at Click
+          </button>
+          <button
+            onClick={() => {
+              onMergeClipWithNext?.(contextMenu.trackId, contextMenu.clip.id);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-[#ff9ba4] hover:text-black transition-colors flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[12px]">call_merge</span>
+            Merge with Next
+          </button>
+          <div className="border-t border-[#2d2d2d] my-1"></div>
+          <button
+            onClick={() => {
+              onDeleteClip(contextMenu.trackId, contextMenu.clip.id);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-error hover:text-white text-error/90 transition-colors flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[12px]">delete</span>
+            Delete Clip
+          </button>
+        </div>
+      )}
     </section>
   );
 }
