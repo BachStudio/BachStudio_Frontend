@@ -48,8 +48,6 @@ type PianoRollOverlayProps = {
   onRealtimeHummingProgress: (beat: number) => void;
   onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
   onStopPlayback?: () => void;
-  quantize: '1/16' | '1/8' | '1/4';
-  onQuantizeChange: (value: '1/16' | '1/8' | '1/4') => void;
 };
 
 type HummingWheelNote = {
@@ -168,8 +166,6 @@ export function PianoRollOverlay({
   onRealtimeHummingProgress,
   onRealtimeHummingEvent,
   onStopPlayback,
-  quantize,
-  onQuantizeChange,
 }: PianoRollOverlayProps) {
   const [isHummingPanelOpen, setIsHummingPanelOpen] = useState(false);
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
@@ -823,29 +819,7 @@ export function PianoRollOverlay({
 
         <main className="flex-1 flex flex-col bg-surface-container-low overflow-hidden">
           <div className="h-10 bg-surface flex items-center px-4 gap-6 border-b border-outline-variant/20">
-            <div className="flex items-center gap-2">
-              <span className="text-[9px] font-mono uppercase text-on-surface-variant">Quantize</span>
-              <div className="flex bg-surface-container-highest border border-outline-variant/10">
-                <button
-                  onClick={() => onQuantizeChange('1/16')}
-                  className={`px-2 py-1 text-[9px] font-mono transition-colors ${quantize === '1/16' ? 'text-primary bg-surface-bright font-bold' : 'text-on-surface-variant hover:text-white'}`}
-                >
-                  1/16
-                </button>
-                <button
-                  onClick={() => onQuantizeChange('1/8')}
-                  className={`px-2 py-1 text-[9px] font-mono transition-colors ${quantize === '1/8' ? 'text-primary bg-surface-bright font-bold' : 'text-on-surface-variant hover:text-white'}`}
-                >
-                  1/8
-                </button>
-                <button
-                  onClick={() => onQuantizeChange('1/4')}
-                  className={`px-2 py-1 text-[9px] font-mono transition-colors ${quantize === '1/4' ? 'text-primary bg-surface-bright font-bold' : 'text-on-surface-variant hover:text-white'}`}
-                >
-                  1/4
-                </button>
-              </div>
-            </div>
+
             <div className="flex-1"></div>
             <div className="flex items-center gap-3">
               <button

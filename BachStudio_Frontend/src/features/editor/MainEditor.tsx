@@ -137,7 +137,6 @@ export function MainEditor() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [pianoTool, setPianoTool] = useState<PianoTool>('select');
   const [selectedNoteIds, setSelectedNoteIds] = useState<number[]>([]);
-  const [quantize, setQuantize] = useState<'1/16' | '1/8' | '1/4'>('1/16');
   const [copiedNotes, setCopiedNotes] = useState<Note[] | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [clipDragState, setClipDragState] = useState<null | {
@@ -897,7 +896,7 @@ export function MainEditor() {
     }
 
     routeSourceToTrack(clapSynthRef.current, trackId);
-    clapSynthRef.current.triggerAttackRelease('16n', undefined, velocity * 0.9);
+    clapSynthRef.current.triggerAttackRelease('16n', undefined, velocity * 1.6);
   };
 
   const triggerAudioClip = (
@@ -2254,15 +2253,7 @@ export function MainEditor() {
     setTracks((prev) => prev.map((track) => (track.id === trackId ? updater(track) : track)));
   };
 
-  const getQuantizeSteps = (quantValue: '1/16' | '1/8' | '1/4'): number => {
-    switch (quantValue) {
-      case '1/8': return 2;
-      case '1/4': return 4;
-      case '1/16':
-      default:
-        return 1;
-    }
-  };
+
 
   const getPointerInGrid = (clientX: number, clientY: number, totalCols: number) => {
     if (!gridRef.current) {
@@ -2804,6 +2795,7 @@ export function MainEditor() {
     if (recorder && recorder.state !== 'inactive') {
       recorder.stop();
     }
+    pausePlayback();
   };
 
   const startVoiceRecording = async () => {
@@ -2891,6 +2883,10 @@ export function MainEditor() {
       recorder.start(250);
       setIsVoiceRecording(true);
       showSaveNotification('Voice recording started');
+
+      if (!playbackSessionRef.current) {
+        await startPlayback(startBeat);
+      }
     } catch (error) {
       console.error('Voice recording failed:', error);
       showSaveNotification(error instanceof Error ? error.message : 'Voice recording failed');
@@ -3108,12 +3104,10 @@ export function MainEditor() {
     const rect = gridRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
     const y = event.clientY - rect.top + gridRef.current.scrollTop - 24;
-    const steps = getQuantizeSteps(quantize);
-    const rawStart = Math.floor(x / GRID_COL_WIDTH);
-    const snappedStart = clamp(Math.round(rawStart / steps) * steps, 0, activeClipTotalCols - steps);
+    const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
     const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
-    const createdLength = Math.min(Math.max(steps, 2), activeClipTotalCols - snappedStart);
+    const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
 
     updateActiveClipNotes((notes) => [
       ...notes,
@@ -3141,12 +3135,10 @@ export function MainEditor() {
     const rect = gridRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
     const y = event.clientY - rect.top + gridRef.current.scrollTop - 24;
-    const steps = getQuantizeSteps(quantize);
-    const rawStart = Math.floor(x / GRID_COL_WIDTH);
-    const snappedStart = clamp(Math.round(rawStart / steps) * steps, 0, activeClipTotalCols - steps);
+    const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
     const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
-    const createdLength = Math.min(Math.max(steps, 2), activeClipTotalCols - snappedStart);
+    const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
 
     updateActiveClipNotes((notes) => [
       ...notes,
@@ -3229,21 +3221,16 @@ export function MainEditor() {
             return note;
           }
 
-          const steps = getQuantizeSteps(quantize);
           if (dragState.mode === 'resize') {
-            const rawLength = origin.length + deltaCols;
-            const snappedLength = Math.round(rawLength / steps) * steps;
             return {
               ...note,
-              length: clamp(snappedLength, steps, maxCols - origin.start),
+              length: clamp(origin.length + deltaCols, 1, maxCols - origin.start),
             };
           }
 
-          const rawStart = origin.start + deltaCols;
-          const snappedStart = Math.round(rawStart / steps) * steps;
           return {
             ...note,
-            start: clamp(snappedStart, 0, maxCols - origin.length),
+            start: clamp(origin.start + deltaCols, 0, maxCols - origin.length),
             pitch: clamp(origin.pitch + deltaRows, 0, pianoRows.length - 1),
           };
         }),
@@ -3262,7 +3249,7 @@ export function MainEditor() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols, pianoRows, quantize]);
+  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols, pianoRows]);
 
   useEffect(() => {
     if (!clipDragState) {
@@ -3566,17 +3553,17 @@ export function MainEditor() {
               <span className="material-symbols-outlined text-primary text-[20px]">
                 {selectedTrack.icon}
               </span>
-              <div className="flex flex-col leading-tight">
+              <div className="flex flex-col justify-center leading-none">
                 <input
                   type="text"
                   value={selectedTrack.name}
                   onFocus={recordHistory}
                   onChange={(event) => handleSelectedTrackNameChange(event.target.value)}
                   onBlur={handleSelectedTrackNameBlur}
-                  className="w-48 bg-transparent text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap outline-none border-b border-transparent focus:border-primary/60"
+                  className="w-48 h-[18px] bg-transparent text-[11px] font-bold uppercase tracking-wide text-primary whitespace-nowrap outline-none border-b border-transparent focus:border-primary/60"
                   title="Edit track name"
                 />
-                <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider whitespace-nowrap">
+                <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-wider whitespace-nowrap mt-[1px]">
                   {selectedTrack.type === 'Audio' ? 'Voice Recording Track' : selectedTrack.type === 'Drums' ? 'Drums Sequencer Track' : 'Piano Instrument Track'}
                 </span>
               </div>
@@ -3758,8 +3745,6 @@ export function MainEditor() {
         onRealtimeHummingProgress={handleRealtimeHummingProgress}
         onRealtimeHummingEvent={handleRealtimeHummingEvent}
         onStopPlayback={stopPlayback}
-        quantize={quantize}
-        onQuantizeChange={setQuantize}
       />
 
       {saveNotification.visible && (
