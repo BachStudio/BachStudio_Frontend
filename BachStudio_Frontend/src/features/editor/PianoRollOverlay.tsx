@@ -3,7 +3,6 @@ import type { MouseEvent as ReactMouseEvent, RefObject } from 'react';
 import {
   GRID_COL_WIDTH,
   GRID_ROW_HEIGHT,
-  GRID_TOTAL_ROWS,
   PIANO_STEPS_PER_BEAT,
 } from './constants';
 import type { Note, PianoRow, PianoTool, SelectionBox } from './types';
@@ -21,6 +20,8 @@ type PianoRollOverlayProps = {
   activeTrackName: string;
   bpm: number;
   bpmLabel: string;
+  playheadBeat: number;
+  isPlaying: boolean;
   clipLengthBeats: number;
   maxRecordingBeats: number;
   pianoTool: PianoTool;
@@ -46,6 +47,7 @@ type PianoRollOverlayProps = {
   onStartRealtimeHumming: () => boolean;
   onRealtimeHummingProgress: (beat: number) => void;
   onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
+  onStopPlayback?: () => void;
 };
 
 type HummingWheelNote = {
@@ -140,6 +142,8 @@ export function PianoRollOverlay({
   activeTrackName,
   bpm,
   bpmLabel,
+  playheadBeat,
+  isPlaying,
   clipLengthBeats,
   maxRecordingBeats,
   pianoTool,
@@ -161,6 +165,7 @@ export function PianoRollOverlay({
   onStartRealtimeHumming,
   onRealtimeHummingProgress,
   onRealtimeHummingEvent,
+  onStopPlayback,
 }: PianoRollOverlayProps) {
   const [isHummingPanelOpen, setIsHummingPanelOpen] = useState(false);
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
@@ -199,6 +204,9 @@ export function PianoRollOverlay({
   const activeHummingNote = detectedNoteLabel.match(/[A-G]/)?.[0] ?? 'D';
   const activeWheelAngle = HUMMING_WHEEL_NOTES.find((note) => note.label === activeHummingNote)?.angleDeg ?? 330;
   const wheelRotationDeg = activeWheelAngle - 330;
+
+  const totalBeats = gridTotalCols / PIANO_STEPS_PER_BEAT;
+  const beatMarkings = Array.from({ length: totalBeats }, (_, i) => i);
 
   const setRecordingMode = (nextState: RecordingState) => {
     recordingStateRef.current = nextState;
@@ -246,6 +254,28 @@ export function PianoRollOverlay({
       gridRef.current.scrollLeft = Math.max(0, left - gridRef.current.clientWidth * 0.58);
     }
   };
+
+  useEffect(() => {
+    if (recordingState === 'idle' && livePlayheadRef.current) {
+      const currentGridWidth = Math.max(
+        gridRef.current?.scrollWidth ?? 0,
+        gridTotalCols * GRID_COL_WIDTH,
+      );
+      const maxLeft = Math.max(currentGridWidth - 2, 0);
+      const left = Math.min(Math.max(playheadBeat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH, 0), maxLeft);
+      livePlayheadRef.current.style.transform = `translateX(${left}px)`;
+
+      // Auto scroll to keep playhead in view during playback
+      if (isPlaying && gridRef.current) {
+        const scrollContainer = gridRef.current;
+        const visibleWidth = scrollContainer.clientWidth;
+        const scrollLeft = scrollContainer.scrollLeft;
+        if (left > scrollLeft + visibleWidth - 100 || left < scrollLeft + 50) {
+          scrollContainer.scrollLeft = Math.max(0, left - visibleWidth * 0.25);
+        }
+      }
+    }
+  }, [playheadBeat, gridTotalCols, recordingState, isPlaying]);
 
   const loadMicrophoneDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -296,6 +326,9 @@ export function PianoRollOverlay({
   };
 
   const stopAudioCapture = () => {
+    if (onStopPlayback) {
+      onStopPlayback();
+    }
     if (stopFallbackTimerRef.current !== null) {
       window.clearTimeout(stopFallbackTimerRef.current);
       stopFallbackTimerRef.current = null;
@@ -817,6 +850,9 @@ export function PianoRollOverlay({
                 onScroll={() => onSyncVerticalScroll('keys')}
                 className="w-20 flex-shrink-0 bg-surface-container-highest overflow-y-auto overflow-x-hidden border-r border-outline-variant/20 no-scrollbar"
               >
+                <div className="sticky top-0 h-6 bg-[#131313] border-b border-outline-variant/30 border-r border-outline-variant/20 z-50 flex items-center justify-center text-[9px] font-mono text-zinc-500 uppercase tracking-widest">
+                  Pitch
+                </div>
                 {pianoRows.map((key) => (
                   <button
                     key={key.row}
@@ -825,15 +861,26 @@ export function PianoRollOverlay({
                     }}
                     className="block h-[23px] mb-px relative w-full text-left"
                   >
-                    {key.isBlack ? (
-                      <div className="h-full w-[70%] bg-[#0a0a0a] border-r border-black/70"></div>
+                    {key.icon ? (
+                      <div className="h-full w-full bg-[#1b1c21] border-r border-outline-variant/35 flex items-center justify-between px-2 text-[#ff9ba4]">
+                        <span className="material-symbols-outlined text-[12px]">
+                          {key.icon === 'kick' ? 'circle' : key.icon === 'snare' ? 'menu' : key.icon === 'hat' ? 'toll' : 'pan_tool'}
+                        </span>
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-300">{key.label}</span>
+                      </div>
                     ) : (
-                      <div className="h-full w-full bg-[#d8d8d8] border-r border-zinc-500/50"></div>
-                    )}
-                    {key.label && (
-                      <span className={`absolute right-1 bottom-0.5 text-[8px] font-bold ${key.isBlack ? 'text-zinc-200' : 'text-zinc-800'}`}>
-                        {key.label}
-                      </span>
+                      <>
+                        {key.isBlack ? (
+                          <div className="h-full w-[70%] bg-[#0a0a0a] border-r border-black/70"></div>
+                        ) : (
+                          <div className="h-full w-full bg-[#d8d8d8] border-r border-zinc-500/50"></div>
+                        )}
+                        {key.label && (
+                          <span className={`absolute right-1 bottom-0.5 text-[8px] font-bold ${key.isBlack ? 'text-zinc-200' : 'text-zinc-800'}`}>
+                            {key.label}
+                          </span>
+                        )}
+                      </>
                     )}
                   </button>
                 ))}
@@ -849,11 +896,32 @@ export function PianoRollOverlay({
                   cursor: pianoTool === 'draw' ? 'crosshair' : 'default',
                 }}
               >
+                <div 
+                  className="sticky top-0 h-6 bg-[#131313] border-b border-outline-variant/30 z-50 flex select-none" 
+                  style={{ width: `${gridTotalCols * GRID_COL_WIDTH}px` }}
+                >
+                  {beatMarkings.map((beat) => (
+                    <div 
+                      key={`ruler-beat-${beat}`} 
+                      className="absolute border-l border-outline-variant/20 h-full flex items-end pb-1 pl-1 text-[9px] font-mono text-zinc-400"
+                      style={{ 
+                        left: `${beat * PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH}px`,
+                        width: `${PIANO_STEPS_PER_BEAT * GRID_COL_WIDTH}px`
+                      }}
+                    >
+                      <span className="font-bold text-zinc-300">{beat + 1}</span>
+                      <div className="absolute left-1/4 bottom-0 h-1 border-l border-zinc-600/30"></div>
+                      <div className="absolute left-2/4 bottom-0 h-2 border-l border-[#ff9ba4]/20"></div>
+                      <div className="absolute left-3/4 bottom-0 h-1 border-l border-zinc-600/30"></div>
+                    </div>
+                  ))}
+                </div>
+
                 <div
                   className="relative"
                   style={{
                     width: `${gridTotalCols * GRID_COL_WIDTH}px`,
-                    height: `${GRID_TOTAL_ROWS * GRID_ROW_HEIGHT}px`,
+                    height: `${pianoRows.length * GRID_ROW_HEIGHT}px`,
                     backgroundSize: `${GRID_COL_WIDTH}px ${GRID_ROW_HEIGHT}px`,
                     backgroundImage: 'linear-gradient(to right, #262626 1px, transparent 1px)',
                   }}

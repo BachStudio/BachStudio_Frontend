@@ -16,6 +16,7 @@ import {
   CLIP_SNAP_BEATS,
   CLIP_CLASS_BY_TYPE,
   DEFAULT_TRACK_SETTINGS,
+  DRUM_KIT_OPTIONS,
   DRUM_OUTPUT_COMP_DB,
   GRID_COL_WIDTH,
   GRID_ROW_HEIGHT,
@@ -156,6 +157,7 @@ export function MainEditor() {
   const [copiedMidiChunk, setCopiedMidiChunk] = useState<CopiedMidiChunk | null>(null);
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<SelectedTimelineClip | null>(null);
   const [isLoopPlaybackOn, setIsLoopPlaybackOn] = useState(false);
+  const [isMetronomeOn, setIsMetronomeOn] = useState(false);
   const [saveNotification, setSaveNotification] = useState<{ message: string; visible: boolean }>({ message: '', visible: false });
   const [loopRange, setLoopRange] = useState<{ startBeat: number; endBeat: number }>({
     startBeat: 0,
@@ -175,6 +177,12 @@ export function MainEditor() {
   const navigate = useNavigate();
   const samplerRef = useRef<Tone.Sampler | null>(null);
   const samplerLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const elecGuitarSamplerRef = useRef<Tone.Sampler | null>(null);
+  const elecGuitarLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const elecBassSamplerRef = useRef<Tone.Sampler | null>(null);
+  const elecBassLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const elecPianoSynthRef = useRef<Tone.PolySynth | null>(null);
+  const metronomeSynthRef = useRef<Tone.Synth | null>(null);
   const analogSynthRef = useRef<Tone.PolySynth | null>(null);
   const organSynthRef = useRef<Tone.PolySynth | null>(null);
   const bassSynthRef = useRef<Tone.MonoSynth | null>(null);
@@ -206,6 +214,7 @@ export function MainEditor() {
     nextEventIndex: number;
     bpm: number;
     events: PlaybackNoteEvent[];
+    lastMetronomeBeat?: number;
   }>(null);
 
   const projectName = searchParams.get('projectName') ?? 'SESSION_2023_X4';
@@ -265,14 +274,24 @@ export function MainEditor() {
     applySnapshot(next);
   };
 
-  const pianoRows = Array.from({ length: GRID_TOTAL_ROWS }, (_, row) => {
-    const midi = MIDI_HIGH - row;
-    const semitone = ((midi % 12) + 12) % 12;
-    const octave = Math.floor(midi / 12) - 1;
-    const isBlack = BLACK_SEMITONES.has(semitone);
-    const label = semitone === 0 || midi === MIDI_LOW || midi === MIDI_HIGH ? `${NOTE_NAMES[semitone]}${octave}` : '';
-    return { row, isBlack, label };
-  });
+  const selectedTrackForRows = tracks.find((track) => track.id === selectedTrackId);
+  const isDrumsTrack = selectedTrackForRows?.type === 'Drums';
+
+  const pianoRows = isDrumsTrack
+    ? [
+        { row: 0, isBlack: false, label: 'Clap', icon: 'clap' },
+        { row: 1, isBlack: false, label: 'Hat', icon: 'hat' },
+        { row: 2, isBlack: false, label: 'Snare', icon: 'snare' },
+        { row: 3, isBlack: false, label: 'Kick', icon: 'kick' },
+      ]
+    : Array.from({ length: GRID_TOTAL_ROWS }, (_, row) => {
+        const midi = MIDI_HIGH - row;
+        const semitone = ((midi % 12) + 12) % 12;
+        const octave = Math.floor(midi / 12) - 1;
+        const isBlack = BLACK_SEMITONES.has(semitone);
+        const label = semitone === 0 || midi === MIDI_LOW || midi === MIDI_HIGH ? `${NOTE_NAMES[semitone]}${octave}` : '';
+        return { row, isBlack, label };
+      });
 
   const activeTrack = tracks.find((track) => track.id === activePianoTrackId) ?? null;
   const activeClip = activeTrack?.clips.find((clip) => clip.id === activePianoClipId) ?? null;
@@ -314,7 +333,7 @@ export function MainEditor() {
 
   const pitchToMidi = (pitch: number) => MIDI_HIGH - pitch;
   const pitchToNoteName = (pitch: number) => Tone.Frequency(pitchToMidi(pitch), 'midi').toNote();
-  const canUsePianoRoll = (track: Track | null) => track !== null && track.type === 'Instrument';
+  const canUsePianoRoll = (track: Track | null) => track !== null && (track.type === 'Instrument' || track.type === 'Drums');
 
   const getAssignedBusTrack = (track: Track) => {
     if (track.outputBusId === null) {
@@ -369,6 +388,20 @@ export function MainEditor() {
   useEffect(() => {
     Tone.getDestination().volume.rampTo(masterVolumeDb, 0.05);
   }, [masterVolumeDb]);
+
+  useEffect(() => {
+    const handlePlayheadUpdate = (e: Event) => {
+      const beat = (e as CustomEvent).detail.beat;
+      const el = document.querySelector('.playhead-timecode');
+      if (el) {
+        el.textContent = formatTimecode(beat);
+      }
+    };
+    window.addEventListener('playhead-update', handlePlayheadUpdate);
+    return () => {
+      window.removeEventListener('playhead-update', handlePlayheadUpdate);
+    };
+  }, []);
 
   const ensureTrackEffectChain = (trackId: number) => {
     const track = tracks.find((candidate) => candidate.id === trackId);
@@ -510,6 +543,113 @@ export function MainEditor() {
     return bassSynthRef.current;
   };
 
+  const ensureElecGuitarSampler = async () => {
+    await ensureToneReady();
+    if (!elecGuitarSamplerRef.current) {
+      elecGuitarSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'D#3': 'Ds3.mp3',
+          'D#4': 'Ds4.mp3',
+          'D#5': 'Ds5.mp3',
+          'E2': 'E2.mp3',
+          'F#2': 'Fs2.mp3',
+          'F#3': 'Fs3.mp3',
+          'F#4': 'Fs4.mp3',
+          'F#5': 'Fs5.mp3',
+          'A2': 'A2.mp3',
+          'A3': 'A3.mp3',
+          'A4': 'A4.mp3',
+          'A5': 'A5.mp3',
+          'C3': 'C3.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'C6': 'C6.mp3',
+          'C#2': 'Cs2.mp3'
+        },
+        release: 1,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/guitar-electric/',
+      }).toDestination();
+      elecGuitarLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Electric guitar sample preload failed:', error);
+      });
+    }
+    await elecGuitarLoadPromiseRef.current;
+    return elecGuitarSamplerRef.current;
+  };
+
+  const ensureElecBassSampler = async () => {
+    await ensureToneReady();
+    if (!elecBassSamplerRef.current) {
+      elecBassSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'A#1': 'As1.mp3',
+          'A#2': 'As2.mp3',
+          'A#3': 'As3.mp3',
+          'A#4': 'As4.mp3',
+          'C#1': 'Cs1.mp3',
+          'C#2': 'Cs2.mp3',
+          'C#3': 'Cs3.mp3',
+          'C#4': 'Cs4.mp3',
+          'E1': 'E1.mp3',
+          'E2': 'E2.mp3',
+          'E3': 'E3.mp3',
+          'E4': 'E4.mp3',
+          'G1': 'G1.mp3',
+          'G2': 'G2.mp3',
+          'G3': 'G3.mp3',
+          'G4': 'G4.mp3'
+        },
+        release: 1.2,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/bass-electric/',
+      }).toDestination();
+      elecBassLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Electric bass sample preload failed:', error);
+      });
+    }
+    await elecBassLoadPromiseRef.current;
+    return elecBassSamplerRef.current;
+  };
+
+  const ensureElecPianoSynth = async () => {
+    await ensureToneReady();
+    if (!elecPianoSynthRef.current) {
+      elecPianoSynthRef.current = new Tone.PolySynth(Tone.FMSynth, {
+        harmonicity: 1,
+        modulationIndex: 1.5,
+        oscillator: { type: 'sine' },
+        envelope: { attack: 0.005, decay: 1.5, sustain: 0.1, release: 1 },
+        modulation: { type: 'sine' },
+        modulationEnvelope: { attack: 0.01, decay: 0.5, sustain: 0, release: 1 }
+      }).toDestination();
+    }
+    return elecPianoSynthRef.current;
+  };
+
+  const ensureMetronomeSynth = () => {
+    if (!metronomeSynthRef.current) {
+      metronomeSynthRef.current = new Tone.Synth({
+        oscillator: { type: 'sine' },
+        envelope: { attack: 0.001, decay: 0.05, sustain: 0, release: 0.05 }
+      }).toDestination();
+    }
+    return metronomeSynthRef.current;
+  };
+
+  const triggerMetronomeClick = (beat: number) => {
+    try {
+      const synth = ensureMetronomeSynth();
+      if (!synth) {
+        return;
+      }
+      const isDownbeat = beat % TIMELINE_BEATS_PER_BAR === 0;
+      const pitch = isDownbeat ? 'C6' : 'C5';
+      const velocity = isDownbeat ? 1.0 : 0.6;
+      synth.triggerAttackRelease(pitch, '32n', undefined, velocity);
+    } catch {
+      // Ignore context errors
+    }
+  };
+
   const ensureDrumSynths = async () => {
     await ensureToneReady();
 
@@ -602,6 +742,9 @@ export function MainEditor() {
       instrumentPresets.has('analog') ? ensureAnalogSynth() : Promise.resolve(),
       instrumentPresets.has('organ') ? ensureOrganSynth() : Promise.resolve(),
       instrumentPresets.has('bass') ? ensureBassSynth() : Promise.resolve(),
+      instrumentPresets.has('elec_guitar') ? ensureElecGuitarSampler() : Promise.resolve(),
+      instrumentPresets.has('elec_bass') ? ensureElecBassSampler() : Promise.resolve(),
+      instrumentPresets.has('elec_piano') ? ensureElecPianoSynth() : Promise.resolve(),
       hasDrumTrack ? ensureDrumSynths() : Promise.resolve(),
       ...Array.from(audioSources).map(async (sourceId) => {
         try {
@@ -675,6 +818,25 @@ export function MainEditor() {
     if (presetId === 'bass' && bassSynthRef.current) {
       routeSourceToTrack(bassSynthRef.current, trackId);
       bassSynthRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'elec_guitar' && elecGuitarSamplerRef.current) {
+      routeSourceToTrack(elecGuitarSamplerRef.current, trackId);
+      elecGuitarSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'elec_bass' && elecBassSamplerRef.current) {
+      routeSourceToTrack(elecBassSamplerRef.current, trackId);
+      elecBassSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'elec_piano' && elecPianoSynthRef.current) {
+      routeSourceToTrack(elecPianoSynthRef.current, trackId);
+      elecPianoSynthRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
     }
   };
 
@@ -713,7 +875,7 @@ export function MainEditor() {
 
     if (lane === 'hat') {
       routeSourceToTrack(hatSynthRef.current, trackId);
-      hatSynthRef.current.triggerAttackRelease('32n', Tone.now(), velocity);
+      hatSynthRef.current.triggerAttackRelease('C6', '32n', undefined, velocity);
       return;
     }
 
@@ -858,7 +1020,22 @@ export function MainEditor() {
 
     if (now - lastPlayheadUiUpdateRef.current >= PLAYHEAD_UI_UPDATE_MS) {
       lastPlayheadUiUpdateRef.current = now;
-      setPlayheadBeat(currentBeat);
+      window.dispatchEvent(new CustomEvent('playhead-update', { detail: { beat: currentBeat } }));
+    }
+
+    // Metronome click scheduling
+    if (isMetronomeOn) {
+      const start = session.startBeat;
+      const lastTick = session.lastMetronomeBeat ?? (start - 0.0001);
+      const startIntegerBeat = Math.ceil(lastTick);
+      const endIntegerBeat = Math.floor(currentBeat);
+
+      for (let beat = startIntegerBeat; beat <= endIntegerBeat; beat++) {
+        if (beat >= start && beat <= playbackEndBeat) {
+          triggerMetronomeClick(beat);
+          session.lastMetronomeBeat = beat;
+        }
+      }
     }
 
     while (session.nextEventIndex < session.events.length && session.events[session.nextEventIndex].startBeat <= currentBeat + 0.0001) {
@@ -874,6 +1051,7 @@ export function MainEditor() {
         startWallTime: now,
         startBeat: loopStartBeat,
         nextEventIndex: nextEventIndex === -1 ? session.events.length : nextEventIndex,
+        lastMetronomeBeat: undefined,
       };
       lastPlayheadUiUpdateRef.current = now;
       setPlayheadBeat(loopStartBeat);
@@ -1360,6 +1538,59 @@ export function MainEditor() {
         envelope: { attack: 0.005, decay: 0.2, sustain: 0.2, release: 0.25 },
         filterEnvelope: { attack: 0.005, decay: 0.18, sustain: 0.15, release: 0.2, baseFrequency: 80, octaves: 3 },
       }).toDestination();
+      const elecGuitarSampler = new Tone.Sampler({
+        urls: {
+          'D#3': 'Ds3.mp3',
+          'D#4': 'Ds4.mp3',
+          'D#5': 'Ds5.mp3',
+          'E2': 'E2.mp3',
+          'F#2': 'Fs2.mp3',
+          'F#3': 'Fs3.mp3',
+          'F#4': 'Fs4.mp3',
+          'F#5': 'Fs5.mp3',
+          'A2': 'A2.mp3',
+          'A3': 'A3.mp3',
+          'A4': 'A4.mp3',
+          'A5': 'A5.mp3',
+          'C3': 'C3.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'C6': 'C6.mp3',
+          'C#2': 'Cs2.mp3'
+        },
+        release: 1,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/guitar-electric/',
+      }).toDestination();
+      const elecBassSampler = new Tone.Sampler({
+        urls: {
+          'A#1': 'As1.mp3',
+          'A#2': 'As2.mp3',
+          'A#3': 'As3.mp3',
+          'A#4': 'As4.mp3',
+          'C#1': 'Cs1.mp3',
+          'C#2': 'Cs2.mp3',
+          'C#3': 'Cs3.mp3',
+          'C#4': 'Cs4.mp3',
+          'E1': 'E1.mp3',
+          'E2': 'E2.mp3',
+          'E3': 'E3.mp3',
+          'E4': 'E4.mp3',
+          'G1': 'G1.mp3',
+          'G2': 'G2.mp3',
+          'G3': 'G3.mp3',
+          'G4': 'G4.mp3'
+        },
+        release: 1.2,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/bass-electric/',
+      }).toDestination();
+      const elecPianoSynth = new Tone.PolySynth(Tone.FMSynth, {
+        harmonicity: 1,
+        modulationIndex: 1.5,
+        oscillator: { type: 'sine' },
+        envelope: { attack: 0.005, decay: 1.5, sustain: 0.1, release: 1 },
+        modulation: { type: 'sine' },
+        modulationEnvelope: { attack: 0.01, decay: 0.5, sustain: 0, release: 1 }
+      }).toDestination();
 
       await Tone.loaded();
 
@@ -1389,7 +1620,25 @@ export function MainEditor() {
           return;
         }
 
-        bassSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+        if (event.instrumentPresetId === 'bass') {
+          bassSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        if (event.instrumentPresetId === 'elec_guitar') {
+          elecGuitarSampler.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        if (event.instrumentPresetId === 'elec_bass') {
+          elecBassSampler.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
+
+        if (event.instrumentPresetId === 'elec_piano') {
+          elecPianoSynth.triggerAttackRelease(noteName, duration, startTime, velocity);
+          return;
+        }
       });
     }, durationSeconds, 2, sampleRate);
     const renderedBuffer = renderedToneBuffer.get();
@@ -1812,7 +2061,7 @@ export function MainEditor() {
 
     return {
       x: clamp(Math.floor(x), 0, totalCols * GRID_COL_WIDTH),
-      y: clamp(Math.floor(y), 0, GRID_TOTAL_ROWS * GRID_ROW_HEIGHT),
+      y: clamp(Math.floor(y), 0, pianoRows.length * GRID_ROW_HEIGHT),
     };
   };
 
@@ -1931,6 +2180,10 @@ export function MainEditor() {
     realtimeClipLengthRef.current = activeClip.length;
     recordHistory();
     setSelectedNoteIds([]);
+
+    // Start playback when humming recording starts
+    void startPlayback(0);
+
     return true;
   };
 
@@ -1999,14 +2252,15 @@ export function MainEditor() {
     }
   };
 
-  const handleAddTrack = (type: 'Instrument' | 'Audio') => {
+  const handleAddTrack = (type: TrackType) => {
     const nextIndex = tracks.length + 1;
     const isVoiceTrack = type === 'Audio';
+    const isDrumTrack = type === 'Drums';
     const createdTrack: Track = {
       id: Date.now() + nextIndex,
       type,
-      name: `${String(nextIndex).padStart(2, '0')} ${isVoiceTrack ? 'VOICE RECORDING' : 'PIANO TRACK'}`,
-      icon: isVoiceTrack ? 'mic' : 'piano',
+      name: `${String(nextIndex).padStart(2, '0')} ${isVoiceTrack ? 'VOICE RECORDING' : isDrumTrack ? 'DRUMS KIT' : 'PIANO TRACK'}`,
+      icon: isVoiceTrack ? 'mic' : isDrumTrack ? 'album' : 'piano',
       clipClass: CLIP_CLASS_BY_TYPE[type],
       clips: [],
       muted: false,
@@ -2031,6 +2285,14 @@ export function MainEditor() {
     }
 
     updateTrackById(selectedTrack.id, (track) => ({ ...track, instrumentPresetId: presetId }));
+  };
+
+  const handleSelectedTrackDrumKitChange = (kitId: Track['drumKitId']) => {
+    if (!selectedTrack) {
+      return;
+    }
+
+    updateTrackById(selectedTrack.id, (track) => ({ ...track, drumKitId: kitId }));
   };
 
   const handleSelectedTrackNameChange = (name: string) => {
@@ -2408,6 +2670,27 @@ export function MainEditor() {
       return;
     }
 
+    if (targetTrack && targetTrack.type === 'Drums') {
+      updateTrackClips(trackId, (clips) =>
+        clips.map((clip) => {
+          if (clip.id !== clipId) {
+            return clip;
+          }
+          return {
+            ...clip,
+            notes: clip.notes.map((note) => {
+              if (note.pitch >= 0 && note.pitch < 4) {
+                return note;
+              }
+              const normalized = 3 - (Math.abs(GRID_TOTAL_ROWS - 1 - note.pitch) % 4);
+              return { ...note, pitch: normalized };
+            }),
+          };
+        }),
+        false
+      );
+    }
+
     setSelectedTrackId(trackId);
     setActivePianoTrackId(trackId);
     setActivePianoClipId(clipId);
@@ -2449,7 +2732,7 @@ export function MainEditor() {
     }
 
     const targetTrack = tracks.find((track) => track.id === trackId);
-    if (!targetTrack || targetTrack.type !== 'Instrument') {
+    if (!targetTrack || (targetTrack.type !== 'Instrument' && targetTrack.type !== 'Drums')) {
       return;
     }
 
@@ -2593,7 +2876,7 @@ export function MainEditor() {
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
     const y = event.clientY - rect.top + gridRef.current.scrollTop;
     const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
-    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, GRID_TOTAL_ROWS - 1);
+    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
     const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
 
@@ -2624,7 +2907,7 @@ export function MainEditor() {
     const x = event.clientX - rect.left + gridRef.current.scrollLeft;
     const y = event.clientY - rect.top + gridRef.current.scrollTop;
     const snappedStart = clamp(Math.floor(x / GRID_COL_WIDTH), 0, activeClipTotalCols - 1);
-    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, GRID_TOTAL_ROWS - 1);
+    const snappedPitch = clamp(Math.floor(y / GRID_ROW_HEIGHT), 0, pianoRows.length - 1);
     const createdId = Date.now() + activeTrackNotes.length;
     const createdLength = Math.min(2, activeClipTotalCols - snappedStart);
 
@@ -2719,7 +3002,7 @@ export function MainEditor() {
           return {
             ...note,
             start: clamp(origin.start + deltaCols, 0, maxCols - origin.length),
-            pitch: clamp(origin.pitch + deltaRows, 0, GRID_TOTAL_ROWS - 1),
+            pitch: clamp(origin.pitch + deltaRows, 0, pianoRows.length - 1),
           };
         }),
         false,
@@ -2737,7 +3020,7 @@ export function MainEditor() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols]);
+  }, [dragState, activePianoTrackId, activePianoClipId, activeClipTotalCols, pianoRows]);
 
   useEffect(() => {
     if (!clipDragState) {
@@ -2949,6 +3232,15 @@ export function MainEditor() {
               <span className="material-symbols-outlined">repeat</span>
             </button>
             <button
+              onClick={() => setIsMetronomeOn((prev) => !prev)}
+              className={`transition-colors active:scale-95 ${isMetronomeOn ? 'text-[#ff9ba4]' : 'text-on-surface-variant hover:text-[#ff9ba4]'}`}
+              title="Metronome"
+            >
+              <span className="material-symbols-outlined" style={{ fontVariationSettings: isMetronomeOn ? "'FILL' 1" : undefined }}>
+                av_timer
+              </span>
+            </button>
+            <button
               type="button"
               onClick={() => {
                 if (isVoiceRecording) {
@@ -2991,7 +3283,7 @@ export function MainEditor() {
             </div>
             <div className="flex flex-col items-center border-x border-outline-variant/20 px-6">
               <span className="text-[9px] text-on-surface-variant uppercase font-bold tracking-tighter">Position</span>
-              <span className="text-lg leading-none">{formatTimecode(playheadBeat)}</span>
+              <span className="text-lg leading-none playhead-timecode">{formatTimecode(playheadBeat)}</span>
             </div>
           </div>
         </div>
@@ -3043,7 +3335,7 @@ export function MainEditor() {
                   title="Edit track name"
                 />
                 <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">
-                  {selectedTrack.type === 'Audio' ? 'Voice Recording Track' : 'Piano Instrument Track'}
+                  {selectedTrack.type === 'Audio' ? 'Voice Recording Track' : selectedTrack.type === 'Drums' ? 'Drums Sequencer Track' : 'Piano Instrument Track'}
                 </span>
               </div>
             </div>
@@ -3071,6 +3363,23 @@ export function MainEditor() {
                   <span className="material-symbols-outlined text-[17px]">download</span>
                   MIDI
                 </button>
+              </>
+            )}
+
+            {selectedTrack.type === 'Drums' && (
+              <>
+                <label className="editor-control-card w-[240px]">
+                  <span className="editor-control-label">Drum Kit</span>
+                  <select
+                    value={selectedTrack.drumKitId}
+                    onChange={(event) => handleSelectedTrackDrumKitChange(event.target.value as Track['drumKitId'])}
+                    className="editor-control-select"
+                  >
+                    {DRUM_KIT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
               </>
             )}
 
@@ -3174,6 +3483,8 @@ export function MainEditor() {
         activeTrackName={activeTrackName}
         bpm={bpm}
         bpmLabel={bpmLabel}
+        playheadBeat={playheadBeat}
+        isPlaying={isPlaying}
         clipLengthBeats={activeClip?.length ?? CLIP_DEFAULT_LENGTH_BEATS}
         maxRecordingBeats={MAX_REALTIME_HUMMING_BEATS}
         pianoTool={pianoTool}
@@ -3201,6 +3512,7 @@ export function MainEditor() {
         onStartRealtimeHumming={handleStartRealtimeHumming}
         onRealtimeHummingProgress={handleRealtimeHummingProgress}
         onRealtimeHummingEvent={handleRealtimeHummingEvent}
+        onStopPlayback={stopPlayback}
       />
 
       {saveNotification.visible && (

@@ -6,7 +6,7 @@ export type Note = {
 };
 
 export type TrackType = 'Instrument' | 'Drums' | 'Audio' | 'Bus';
-export type InstrumentPresetId = 'piano' | 'analog' | 'organ' | 'bass';
+export type InstrumentPresetId = 'piano' | 'analog' | 'organ' | 'bass' | 'elec_guitar' | 'elec_bass' | 'elec_piano';
 export type DrumKitId = 'acoustic' | 'electro' | 'trap808';
 export type AudioSourceId = 'vocal_chop' | 'guitar_hit' | 'fx_riser';
 
@@ -86,4 +86,5 @@ export type PianoRow = {
   row: number;
   isBlack: boolean;
   label: string;
+  icon?: string;
 };

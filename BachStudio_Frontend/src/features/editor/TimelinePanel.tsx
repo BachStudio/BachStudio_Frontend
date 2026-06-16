@@ -7,7 +7,7 @@ import {
   TIMELINE_TOTAL_BARS,
   TIMELINE_TOTAL_BEATS,
 } from './constants';
-import type { Clip, Track } from './types';
+import type { Clip, Track, TrackType } from './types';
 
 type TimelinePanelProps = {
   tracks: Track[];
@@ -23,7 +23,7 @@ type TimelinePanelProps = {
   onSeekBeat: (beat: number) => void;
   onMasterEditStart: () => void;
   onMasterVolumeChange: (value: string) => void;
-  onAddTrack: (type: 'Instrument' | 'Audio') => void;
+  onAddTrack: (type: TrackType) => void;
   onTrackClick: (trackId: number) => void;
   onTrackDoubleClick: (trackId: number) => void;
   onToggleTrackMute: (trackId: number) => void;
@@ -149,6 +149,7 @@ export function TimelinePanel({
   ) => {
     if (event.button !== 0) {
       return;
+
     }
 
     event.stopPropagation();
@@ -162,6 +163,21 @@ export function TimelinePanel({
       initialEndBeat: loopRange.endBeat,
     });
   };
+
+  useEffect(() => {
+    const handlePlayheadUpdate = (e: Event) => {
+      const beat = (e as CustomEvent).detail.beat;
+      const percent = Math.max(0, Math.min((beat / TIMELINE_TOTAL_BEATS) * 100, 100));
+      const els = document.querySelectorAll('.timeline-playhead-line, .ruler-playhead-line');
+      els.forEach((el) => {
+        (el as HTMLElement).style.left = `${percent}%`;
+      });
+    };
+    window.addEventListener('playhead-update', handlePlayheadUpdate);
+    return () => {
+      window.removeEventListener('playhead-update', handlePlayheadUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     if (!loopDragState) {
@@ -294,7 +310,7 @@ export function TimelinePanel({
           })}
 
           <div
-            className="absolute top-0 bottom-0 w-px bg-primary z-30 pointer-events-none"
+            className="absolute top-0 bottom-0 w-px bg-primary z-30 pointer-events-none ruler-playhead-line"
             style={{ left: `${playheadPercent}%` }}
           ></div>
         </div>
@@ -303,24 +319,33 @@ export function TimelinePanel({
 
       <div className="flex-1 overflow-y-auto no-scrollbar">
         <div className="flex h-16">
-          <div className="w-48 flex items-center justify-center gap-1.5 px-2 border-r border-outline-variant/20">
+          <div className="w-48 flex items-center justify-center gap-1 px-1.5 border-r border-outline-variant/20">
             <button
               type="button"
               onClick={() => onAddTrack('Instrument')}
-              className="h-8 flex-1 flex items-center justify-center gap-1 border border-outline-variant/20 text-on-surface-variant hover:border-primary/60 hover:text-primary transition-colors"
+              className="h-8 flex-1 flex items-center justify-center gap-0.5 border border-outline-variant/20 text-on-surface-variant hover:border-primary/60 hover:text-primary transition-colors"
               title="Add piano track"
             >
-              <span className="material-symbols-outlined text-[16px]">piano</span>
-              <span className="text-[8px] font-bold uppercase">Piano</span>
+              <span className="material-symbols-outlined text-[14px]">piano</span>
+              <span className="text-[7px] font-bold uppercase">Piano</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onAddTrack('Drums')}
+              className="h-8 flex-1 flex items-center justify-center gap-0.5 border border-outline-variant/20 text-on-surface-variant hover:border-[#edce35]/60 hover:text-[#fcdc43] transition-colors"
+              title="Add drum track"
+            >
+              <span className="material-symbols-outlined text-[14px]">album</span>
+              <span className="text-[7px] font-bold uppercase">Drums</span>
             </button>
             <button
               type="button"
               onClick={() => onAddTrack('Audio')}
-              className="h-8 flex-1 flex items-center justify-center gap-1 border border-outline-variant/20 text-on-surface-variant hover:border-[#ff9ba4]/60 hover:text-[#ffb2ba] transition-colors"
+              className="h-8 flex-1 flex items-center justify-center gap-0.5 border border-outline-variant/20 text-on-surface-variant hover:border-[#ff9ba4]/60 hover:text-[#ffb2ba] transition-colors"
               title="Add voice recording track"
             >
-              <span className="material-symbols-outlined text-[16px]">mic</span>
-              <span className="text-[8px] font-bold uppercase">Voice</span>
+              <span className="material-symbols-outlined text-[14px]">mic</span>
+              <span className="text-[7px] font-bold uppercase">Voice</span>
             </button>
           </div>
           <div
@@ -418,7 +443,7 @@ export function TimelinePanel({
                 })}
 
                 <div
-                  className="absolute top-0 bottom-0 w-px bg-primary/80 z-20"
+                  className="absolute top-0 bottom-0 w-px bg-primary/80 z-20 timeline-playhead-line"
                   style={{ left: `${playheadPercent}%` }}
                 ></div>
               </div>
