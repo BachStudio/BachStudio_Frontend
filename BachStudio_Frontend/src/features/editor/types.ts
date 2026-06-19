@@ -17,6 +17,7 @@ export type Clip = {
   notes: Note[];
   audioDataUrl?: string;
   audioMimeType?: string;
+  audioFileName?: string;
   audioPreview?: number[];
   audioStartOffset?: number;
 };

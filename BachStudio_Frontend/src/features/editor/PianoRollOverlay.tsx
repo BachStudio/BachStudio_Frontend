@@ -45,6 +45,7 @@ type PianoRollOverlayProps = {
   ) => void;
   onDeleteNote: (noteId: number) => void;
   onPrepareRealtimeHumming: () => boolean;
+  onRealtimeHummingCountInBeat: (beat: number) => void;
   onStartRealtimeHummingPlayback: () => Promise<void>;
   onRealtimeHummingProgress: (beat: number) => void;
   onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
@@ -164,6 +165,7 @@ export function PianoRollOverlay({
   onNoteMouseDown,
   onDeleteNote,
   onPrepareRealtimeHumming,
+  onRealtimeHummingCountInBeat,
   onStartRealtimeHummingPlayback,
   onRealtimeHummingProgress,
   onRealtimeHummingEvent,
@@ -650,6 +652,20 @@ export function PianoRollOverlay({
         stopAudioCapture();
         closeRealtimeSocket();
         return;
+      }
+
+      const countInBeatMs = 60_000 / bpm;
+      for (let beat = 1; beat <= 4; beat += 1) {
+        if (recordingSessionRef.current !== sessionId) {
+          stopAudioCapture();
+          closeRealtimeSocket();
+          return;
+        }
+        setStreamStatus(`Count-in ${5 - beat}`);
+        onRealtimeHummingCountInBeat(beat);
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, countInBeatMs);
+        });
       }
 
       await onStartRealtimeHummingPlayback();

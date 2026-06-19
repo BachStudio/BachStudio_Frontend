@@ -659,7 +659,7 @@ export function MainEditor() {
 
     if (!kickSynthRef.current) {
       kickSynthRef.current = new Tone.MembraneSynth({
-        volume: 4,
+        volume: 10,
         pitchDecay: 0.04,
         octaves: 8,
         envelope: { attack: 0.001, decay: 0.45, sustain: 0, release: 0.2 },
@@ -1798,6 +1798,27 @@ export function MainEditor() {
         modulation: { type: 'sine' },
         modulationEnvelope: { attack: 0.01, decay: 0.5, sustain: 0, release: 1 }
       }).toDestination();
+      const kickSynth = new Tone.MembraneSynth({
+        volume: 10,
+        pitchDecay: 0.04,
+        octaves: 8,
+        envelope: { attack: 0.001, decay: 0.45, sustain: 0, release: 0.2 },
+      }).toDestination();
+      const snareSynth = new Tone.NoiseSynth({
+        noise: { type: 'white' },
+        envelope: { attack: 0.001, decay: 0.18, sustain: 0 },
+      }).toDestination();
+      const hatSynth = new Tone.MetalSynth({
+        envelope: { attack: 0.001, decay: 0.12, release: 0.06 },
+        harmonicity: 5.1,
+        modulationIndex: 32,
+        resonance: 4200,
+        octaves: 1.5,
+      }).toDestination();
+      const clapSynth = new Tone.NoiseSynth({
+        noise: { type: 'pink' },
+        envelope: { attack: 0.001, decay: 0.12, sustain: 0 },
+      }).toDestination();
 
       await Tone.loaded();
 
@@ -1811,6 +1832,27 @@ export function MainEditor() {
         const duration = Math.max(0.05, event.durationSeconds);
         const compensatedDb = event.effectiveVolumeDb + getEventOutputCompDb(event) + masterVolumeDb;
         const velocity = dbToVelocity(compensatedDb);
+
+        if (event.trackType === 'Drums') {
+          const lane = resolveDrumLane(event.pitch);
+          if (lane === 'kick') {
+            const kickNote = event.drumKitId === 'trap808'
+              ? 'C1'
+              : event.drumKitId === 'jazz'
+                ? 'G1'
+                : event.drumKitId === 'electro'
+                  ? 'E1'
+                  : 'D1';
+            kickSynth.triggerAttackRelease(kickNote, Math.max(0.08, duration), startTime, velocity);
+          } else if (lane === 'snare') {
+            snareSynth.triggerAttackRelease('16n', startTime, velocity);
+          } else if (lane === 'hat') {
+            hatSynth.triggerAttackRelease('C6', '32n', startTime, velocity);
+          } else {
+            clapSynth.triggerAttackRelease('16n', startTime, Math.min(1, velocity * 1.6));
+          }
+          return;
+        }
 
         if (event.instrumentPresetId === 'piano') {
           sampler.triggerAttackRelease(noteName, duration, startTime, velocity);
@@ -1901,11 +1943,13 @@ export function MainEditor() {
 
   const handleExportProject = async (format: ExportFormat) => {
     setIsExportMenuOpen(false);
-    const events = buildPlaybackEvents().filter((event) => event.trackType === 'Instrument' && event.pitch !== null);
+    const events = buildPlaybackEvents().filter(
+      (event) => (event.trackType === 'Instrument' || event.trackType === 'Drums') && event.pitch !== null,
+    );
     const safeProjectName = projectName.trim().replace(/[\\/:*?"<>|]/g, '_') || 'bach-studio-project';
 
     if (events.length === 0) {
-      showSaveNotification('No piano notes to export');
+      showSaveNotification('No instrument or drum notes to export');
       return;
     }
 
@@ -2430,6 +2474,10 @@ export function MainEditor() {
     await startPlayback(0);
   };
 
+  const handleRealtimeHummingCountInBeat = (beat: number) => {
+    triggerMetronomeClick(beat - 1);
+  };
+
   const handleRealtimeHummingEvent = (event: HummingStreamEvent) => {
     if (!activeTrack || !activeClip) {
       return;
@@ -2783,6 +2831,56 @@ export function MainEditor() {
       });
     } finally {
       await previewContext.close();
+    }
+  };
+
+  const getAudioDurationSeconds = async (blob: Blob) => {
+    const audioContext = new AudioContext();
+    try {
+      const audioBuffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
+      return audioBuffer.duration;
+    } finally {
+      await audioContext.close();
+    }
+  };
+
+  const handleAudioFileDrop = async (file: File, trackId: number, startBeat: number) => {
+    const isMp3 = file.type === 'audio/mpeg' || file.name.toLowerCase().endsWith('.mp3');
+    if (!isMp3) {
+      showSaveNotification('Only MP3 files can be added');
+      return;
+    }
+
+    try {
+      const [audioDataUrl, audioPreview, durationSeconds] = await Promise.all([
+        blobToDataUrl(file),
+        createAudioPreview(file),
+        getAudioDurationSeconds(file),
+      ]);
+      const lengthBeats = Math.max(0.25, durationSeconds * (bpm / 60));
+      const clipId = Date.now();
+
+      recordHistory();
+      updateTrackClips(trackId, (clips) => [
+        ...clips,
+        {
+          id: clipId,
+          start: startBeat,
+          length: Math.min(lengthBeats, TIMELINE_TOTAL_BEATS - startBeat),
+          notes: [],
+          audioDataUrl,
+          audioMimeType: file.type || 'audio/mpeg',
+          audioFileName: file.name,
+          audioPreview,
+        },
+      ], false);
+      setSelectedTrackId(trackId);
+      setSelectedTimelineClip({ trackId, clipId });
+      void ensureRecordedAudioPlayer(audioDataUrl);
+      showSaveNotification(`Added MP3: ${file.name}`);
+    } catch (error) {
+      console.error('MP3 import failed:', error);
+      showSaveNotification('MP3 import failed');
     }
   };
 
@@ -3737,6 +3835,7 @@ export function MainEditor() {
             onToggleTrackMute={handleToggleTrackMute}
             onToggleTrackSolo={handleToggleTrackSolo}
             onTrackLaneDoubleClick={handleTrackLaneDoubleClick}
+            onAudioFileDrop={handleAudioFileDrop}
             onClipMouseDown={handleClipMouseDown}
             onClipDoubleClick={handleClipDoubleClick}
             onClipResizeMouseDown={handleClipResizeMouseDown}
@@ -3780,6 +3879,7 @@ export function MainEditor() {
         onNoteMouseDown={handleNoteMouseDown}
         onDeleteNote={handleDeleteNote}
         onPrepareRealtimeHumming={handleStartRealtimeHumming}
+        onRealtimeHummingCountInBeat={handleRealtimeHummingCountInBeat}
         onStartRealtimeHummingPlayback={handleStartRealtimeHummingPlayback}
         onRealtimeHummingProgress={handleRealtimeHummingProgress}
         onRealtimeHummingEvent={handleRealtimeHummingEvent}

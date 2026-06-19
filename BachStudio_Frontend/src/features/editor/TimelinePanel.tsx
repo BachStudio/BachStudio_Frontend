@@ -29,6 +29,7 @@ type TimelinePanelProps = {
   onToggleTrackMute: (trackId: number) => void;
   onToggleTrackSolo: (trackId: number) => void;
   onTrackLaneDoubleClick: (event: ReactMouseEvent<HTMLDivElement>, trackId: number) => void;
+  onAudioFileDrop: (file: File, trackId: number, startBeat: number) => void;
   onClipMouseDown: (event: ReactMouseEvent<HTMLDivElement>, trackId: number, clip: Clip) => void;
   onClipDoubleClick: (event: ReactMouseEvent<HTMLDivElement>, trackId: number, clipId: number) => void;
   onClipResizeMouseDown: (event: ReactMouseEvent<HTMLSpanElement>, trackId: number, clip: Clip) => void;
@@ -67,6 +68,7 @@ export function TimelinePanel({
   onToggleTrackMute,
   onToggleTrackSolo,
   onTrackLaneDoubleClick,
+  onAudioFileDrop,
   onClipMouseDown,
   onClipDoubleClick,
   onClipResizeMouseDown,
@@ -451,6 +453,30 @@ export function TimelinePanel({
               data-track-lane="1"
               onClick={() => onTrackClick(track.id)}
               onDoubleClick={(event) => onTrackLaneDoubleClick(event, track.id)}
+              onDragOver={(event) => {
+                if (track.type === 'Audio' && event.dataTransfer.types.includes('Files')) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                }
+              }}
+              onDrop={(event) => {
+                if (track.type !== 'Audio') {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                const file = event.dataTransfer.files[0];
+                if (!file) {
+                  return;
+                }
+                const rect = event.currentTarget.getBoundingClientRect();
+                const rawBeat = (event.clientX - rect.left) / TIMELINE_BEAT_WIDTH_PX;
+                const startBeat = Math.max(0, Math.min(
+                  TIMELINE_TOTAL_BEATS - 0.25,
+                  Math.round(rawBeat * 4) / 4,
+                ));
+                onAudioFileDrop(file, track.id, startBeat);
+              }}
               className={`relative h-full overflow-hidden ${track.type === 'Bus' ? 'cursor-not-allowed' : 'cursor-pointer'}`}
               style={{ width: `${timelineContentWidth}px` }}
             >
@@ -571,7 +597,7 @@ export function TimelinePanel({
                       </div>
                     ) : (
                       <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-primary/80 uppercase tracking-wider">
-                        {clip.audioDataUrl ? 'Recorded Voice' : 'Audio Clip'}
+                        {clip.audioFileName || (clip.audioDataUrl ? 'Recorded Voice' : 'Audio Clip')}
                       </span>
                     )
                   ) : clip.notes.length === 0 ? (
