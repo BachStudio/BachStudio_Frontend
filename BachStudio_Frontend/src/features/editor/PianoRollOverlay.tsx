@@ -281,6 +281,31 @@ export function PianoRollOverlay({
     }
   }, [playheadBeat, gridTotalCols, recordingState, isPlaying]);
 
+  useEffect(() => {
+    if (!isOpen || pianoRows.length <= 4) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const grid = gridRef.current;
+      const keys = pianoKeysRef.current;
+      if (!grid || !keys) {
+        return;
+      }
+
+      const c4Row = pianoRows.findIndex((row) => row.label === 'C4');
+      const targetRow = c4Row >= 0 ? c4Row : Math.floor(pianoRows.length / 2);
+      const targetScrollTop = Math.max(
+        0,
+        targetRow * GRID_ROW_HEIGHT - (grid.clientHeight - 24) / 2,
+      );
+      grid.scrollTop = targetScrollTop;
+      keys.scrollTop = targetScrollTop;
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isOpen]);
+
   const loadMicrophoneDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       return;
@@ -962,7 +987,7 @@ export function PianoRollOverlay({
                     style={{ transform: 'translateX(0px)' }}
                   ></div>
 
-                  {activeTrackNotes.length === 0 && (
+                  {activeTrackNotes.length === 0 && !isHummingPanelOpen && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
                       <span className="text-zinc-500 font-mono text-[10px] uppercase tracking-widest">
                         {pianoTool === 'draw'
@@ -1019,7 +1044,7 @@ export function PianoRollOverlay({
             </div>
 
             <aside
-              className={`absolute top-0 right-0 h-full w-[360px] border-l border-white/10 bg-[#14171d]/95 backdrop-blur-md shadow-[-24px_0_40px_rgba(0,0,0,0.45)] transition-transform duration-300 ease-out ${isHummingPanelOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full pointer-events-none'}`}
+              className={`absolute top-0 right-0 z-[60] h-full w-[360px] border-l border-white/10 bg-[#14171d]/95 backdrop-blur-md shadow-[-24px_0_40px_rgba(0,0,0,0.45)] transition-transform duration-300 ease-out ${isHummingPanelOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full pointer-events-none'}`}
             >
               <div className="h-full flex flex-col px-5 py-4 gap-4 overflow-y-auto no-scrollbar">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
