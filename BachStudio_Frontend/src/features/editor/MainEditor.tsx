@@ -659,6 +659,7 @@ export function MainEditor() {
 
     if (!kickSynthRef.current) {
       kickSynthRef.current = new Tone.MembraneSynth({
+        volume: 4,
         pitchDecay: 0.04,
         octaves: 8,
         envelope: { attack: 0.001, decay: 0.45, sustain: 0, release: 0.2 },
@@ -2422,10 +2423,11 @@ export function MainEditor() {
     recordHistory();
     setSelectedNoteIds([]);
 
-    // Start playback when humming recording starts
-    void startPlayback(0);
-
     return true;
+  };
+
+  const handleStartRealtimeHummingPlayback = async () => {
+    await startPlayback(0);
   };
 
   const handleRealtimeHummingEvent = (event: HummingStreamEvent) => {
@@ -3777,7 +3779,8 @@ export function MainEditor() {
         onSyncVerticalScroll={syncVerticalScroll}
         onNoteMouseDown={handleNoteMouseDown}
         onDeleteNote={handleDeleteNote}
-        onStartRealtimeHumming={handleStartRealtimeHumming}
+        onPrepareRealtimeHumming={handleStartRealtimeHumming}
+        onStartRealtimeHummingPlayback={handleStartRealtimeHummingPlayback}
         onRealtimeHummingProgress={handleRealtimeHummingProgress}
         onRealtimeHummingEvent={handleRealtimeHummingEvent}
         onStopPlayback={stopPlayback}

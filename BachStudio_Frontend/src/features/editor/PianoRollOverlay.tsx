@@ -44,7 +44,8 @@ type PianoRollOverlayProps = {
     forcedMode?: 'move' | 'resize',
   ) => void;
   onDeleteNote: (noteId: number) => void;
-  onStartRealtimeHumming: () => boolean;
+  onPrepareRealtimeHumming: () => boolean;
+  onStartRealtimeHummingPlayback: () => Promise<void>;
   onRealtimeHummingProgress: (beat: number) => void;
   onRealtimeHummingEvent: (event: HummingStreamEvent) => void;
   onStopPlayback?: () => void;
@@ -162,7 +163,8 @@ export function PianoRollOverlay({
   onSyncVerticalScroll,
   onNoteMouseDown,
   onDeleteNote,
-  onStartRealtimeHumming,
+  onPrepareRealtimeHumming,
+  onStartRealtimeHummingPlayback,
   onRealtimeHummingProgress,
   onRealtimeHummingEvent,
   onStopPlayback,
@@ -480,7 +482,7 @@ export function PianoRollOverlay({
   };
 
   const startHummingRecording = async () => {
-    if (!onStartRealtimeHumming()) {
+    if (!onPrepareRealtimeHumming()) {
       return;
     }
 
@@ -639,10 +641,6 @@ export function PianoRollOverlay({
         }
       };
 
-      source.connect(processor);
-      processor.connect(monitorGain);
-      monitorGain.connect(audioContext.destination);
-
       audioSourceRef.current = source;
       audioProcessorRef.current = processor;
       monitorGainRef.current = monitorGain;
@@ -653,6 +651,17 @@ export function PianoRollOverlay({
         closeRealtimeSocket();
         return;
       }
+
+      await onStartRealtimeHummingPlayback();
+      if (recordingSessionRef.current !== sessionId) {
+        stopAudioCapture();
+        closeRealtimeSocket();
+        return;
+      }
+
+      source.connect(processor);
+      processor.connect(monitorGain);
+      monitorGain.connect(audioContext.destination);
 
       setRecordingMode('recording');
       setStreamStatus((status) => (status === 'Preparing' ? 'Streaming' : status));
@@ -686,7 +695,7 @@ export function PianoRollOverlay({
       return;
     }
 
-    if (!onStartRealtimeHumming()) {
+    if (!onPrepareRealtimeHumming()) {
       return;
     }
 
