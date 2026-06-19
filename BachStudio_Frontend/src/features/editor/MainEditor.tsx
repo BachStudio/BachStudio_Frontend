@@ -176,6 +176,8 @@ export function MainEditor() {
   const isSyncingScrollRef = useRef(false);
   const originalTracksRef = useRef<Track[]>([]);
   const originalBpmRef = useRef<number>(128);
+  const hasUnsavedHistoryGuardRef = useRef(false);
+  const allowHistoryNavigationRef = useRef(false);
   const navigate = useNavigate();
   const samplerRef = useRef<Tone.Sampler | null>(null);
   const samplerLoadPromiseRef = useRef<Promise<void> | null>(null);
@@ -1513,6 +1515,17 @@ export function MainEditor() {
       originalTracksRef.current = JSON.parse(JSON.stringify(tracks));
       originalBpmRef.current = bpm;
       setIsModified(false);
+      if (
+        hasUnsavedHistoryGuardRef.current
+        && window.history.state?.bachStudioUnsavedGuard
+      ) {
+        allowHistoryNavigationRef.current = true;
+        hasUnsavedHistoryGuardRef.current = false;
+        window.history.back();
+        window.setTimeout(() => {
+          allowHistoryNavigationRef.current = false;
+        }, 0);
+      }
       setSaveNotification({
         message: `Saved online: ${projectName}`,
         visible: true,
@@ -1524,6 +1537,8 @@ export function MainEditor() {
     setTimeout(() => {
       setSaveNotification({ message: '', visible: false });
     }, 2000);
+
+    return backendSuccess;
   };
 
   const downloadBlob = (blob: Blob, fileName: string) => {
@@ -1936,13 +1951,16 @@ export function MainEditor() {
     showSaveNotification(`Exported MIDI: ${safeTrackName}`);
   };
 
-  const handleLoadProject = () => {
+  const handleLoadProject = async () => {
     if (isModified) {
       const shouldSave = window.confirm(
         '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
       );
       if (shouldSave) {
-        void handleSaveProject();
+        const isSaved = await handleSaveProject();
+        if (!isSaved) {
+          return;
+        }
       }
     }
     navigate('/projects');
@@ -2009,22 +2027,40 @@ export function MainEditor() {
   useEffect(() => {
     if (!isModified) return;
 
+    if (!hasUnsavedHistoryGuardRef.current) {
+      window.history.pushState(
+        { ...window.history.state, bachStudioUnsavedGuard: true },
+        '',
+        window.location.href,
+      );
+      hasUnsavedHistoryGuardRef.current = true;
+    }
+
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
 
-    const handlePopState = () => {
-      if (
-        window.confirm(
-          '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
-        )
-      ) {
-        void handleSaveProject();
-      } else {
-        // 사용자가 "아니오"를 선택해도 이미 navigate가 일어났으므로,
-        // 돌아가도록 forward를 누르거나 그냥 진행
+    const handlePopState = async () => {
+      if (allowHistoryNavigationRef.current) {
+        return;
       }
+
+      const shouldSave = window.confirm(
+        '저장하지 않은 변경사항이 있습니다.\n저장하시겠습니까?'
+      );
+
+      if (shouldSave) {
+        const isSaved = await handleSaveProject();
+        if (!isSaved) {
+          window.history.forward();
+          return;
+        }
+      }
+
+      allowHistoryNavigationRef.current = true;
+      hasUnsavedHistoryGuardRef.current = false;
+      window.history.back();
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -2034,7 +2070,7 @@ export function MainEditor() {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [isModified, tracks, bpm]);
+  }, [isModified, tracks, bpm, projectDescription]);
 
   const triggerTrackPreview = async (track: Track, pitch: number, durationSeconds = 0.35) => {
     try {
