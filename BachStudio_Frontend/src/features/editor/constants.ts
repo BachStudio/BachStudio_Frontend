@@ -55,6 +55,9 @@ export const INSTRUMENT_PRESET_OPTIONS: InstrumentPresetOption[] = [
   { id: 'elec_guitar', label: 'Electric Guitar', subtitle: 'Sampler / Clean Tone' },
   { id: 'elec_bass', label: 'Electric Bass', subtitle: 'Sampler / Solid Low End' },
   { id: 'elec_piano', label: 'Electric Piano', subtitle: 'FM Synth / Vintage Rhodes' },
+  { id: 'cello', label: 'Cello', subtitle: 'Sampler / Warm Strings' },
+  { id: 'flute', label: 'Flute', subtitle: 'Sampler / Breath Woodwind' },
+  { id: 'violin', label: 'Violin', subtitle: 'Sampler / Expressive Strings' },
 ];
 
 export const DRUM_KIT_OPTIONS: DrumKitOption[] = [
@@ -94,6 +97,9 @@ export const INSTRUMENT_OUTPUT_COMP_DB = {
   elec_guitar: -3,
   elec_bass: -2,
   elec_piano: -6,
+  cello: -4,
+  flute: -8,
+  violin: -6,
 } as const;
 
 export const DRUM_OUTPUT_COMP_DB = {

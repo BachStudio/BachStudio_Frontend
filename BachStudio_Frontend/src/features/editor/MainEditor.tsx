@@ -185,6 +185,12 @@ export function MainEditor() {
   const elecGuitarLoadPromiseRef = useRef<Promise<void> | null>(null);
   const elecBassSamplerRef = useRef<Tone.Sampler | null>(null);
   const elecBassLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const celloSamplerRef = useRef<Tone.Sampler | null>(null);
+  const celloLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const fluteSamplerRef = useRef<Tone.Sampler | null>(null);
+  const fluteLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const violinSamplerRef = useRef<Tone.Sampler | null>(null);
+  const violinLoadPromiseRef = useRef<Promise<void> | null>(null);
   const elecPianoSynthRef = useRef<Tone.PolySynth | null>(null);
   const metronomeSynthRef = useRef<Tone.Synth | null>(null);
   const analogSynthRef = useRef<Tone.PolySynth | null>(null);
@@ -614,6 +620,100 @@ export function MainEditor() {
     return elecBassSamplerRef.current;
   };
 
+  const ensureCelloSampler = async () => {
+    await ensureToneReady();
+    if (!celloSamplerRef.current) {
+      celloSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'A2': 'A2.mp3',
+          'A3': 'A3.mp3',
+          'A4': 'A4.mp3',
+          'A5': 'A5.mp3',
+          'C2': 'C2.mp3',
+          'C3': 'C3.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'D#2': 'Ds2.mp3',
+          'D#3': 'Ds3.mp3',
+          'D#4': 'Ds4.mp3',
+          'D#5': 'Ds5.mp3',
+          'F#2': 'Fs2.mp3',
+          'F#3': 'Fs3.mp3',
+          'F#4': 'Fs4.mp3',
+          'F#5': 'Fs5.mp3'
+        },
+        release: 1,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/cello/',
+      }).toDestination();
+      celloLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Cello sample preload failed:', error);
+      });
+    }
+    await celloLoadPromiseRef.current;
+    return celloSamplerRef.current;
+  };
+
+  const ensureFluteSampler = async () => {
+    await ensureToneReady();
+    if (!fluteSamplerRef.current) {
+      fluteSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'A4': 'A4.mp3',
+          'A5': 'A5.mp3',
+          'A6': 'A6.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'C6': 'C6.mp3',
+          'C7': 'C7.mp3',
+          'D#4': 'Ds4.mp3',
+          'D#5': 'Ds5.mp3',
+          'D#6': 'Ds6.mp3',
+          'F#4': 'Fs4.mp3',
+          'F#5': 'Fs5.mp3',
+          'F#6': 'Fs6.mp3'
+        },
+        release: 1,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/flute/',
+      }).toDestination();
+      fluteLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Flute sample preload failed:', error);
+      });
+    }
+    await fluteLoadPromiseRef.current;
+    return fluteSamplerRef.current;
+  };
+
+  const ensureViolinSampler = async () => {
+    await ensureToneReady();
+    if (!violinSamplerRef.current) {
+      violinSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'A3': 'A3.mp3',
+          'A4': 'A4.mp3',
+          'A5': 'A5.mp3',
+          'A6': 'A6.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'C6': 'C6.mp3',
+          'C7': 'C7.mp3',
+          'D#4': 'Ds4.mp3',
+          'D#5': 'Ds5.mp3',
+          'D#6': 'Ds6.mp3',
+          'F#4': 'Fs4.mp3',
+          'F#5': 'Fs5.mp3',
+          'F#6': 'Fs6.mp3'
+        },
+        release: 1.2,
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/violin/',
+      }).toDestination();
+      violinLoadPromiseRef.current = Tone.loaded().catch((error) => {
+        console.warn('Violin sample preload failed:', error);
+      });
+    }
+    await violinLoadPromiseRef.current;
+    return violinSamplerRef.current;
+  };
+
   const ensureElecPianoSynth = async () => {
     await ensureToneReady();
     if (!elecPianoSynthRef.current) {
@@ -749,6 +849,9 @@ export function MainEditor() {
       instrumentPresets.has('bass') ? ensureBassSynth() : Promise.resolve(),
       instrumentPresets.has('elec_guitar') ? ensureElecGuitarSampler() : Promise.resolve(),
       instrumentPresets.has('elec_bass') ? ensureElecBassSampler() : Promise.resolve(),
+      instrumentPresets.has('cello') ? ensureCelloSampler() : Promise.resolve(),
+      instrumentPresets.has('flute') ? ensureFluteSampler() : Promise.resolve(),
+      instrumentPresets.has('violin') ? ensureViolinSampler() : Promise.resolve(),
       instrumentPresets.has('elec_piano') ? ensureElecPianoSynth() : Promise.resolve(),
       hasDrumTrack ? ensureDrumSynths() : Promise.resolve(),
       ...Array.from(audioSources).map(async (sourceId) => {
@@ -849,6 +952,24 @@ export function MainEditor() {
     if (presetId === 'elec_bass' && elecBassSamplerRef.current) {
       routeSourceToTrack(elecBassSamplerRef.current, trackId);
       elecBassSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'cello' && celloSamplerRef.current) {
+      routeSourceToTrack(celloSamplerRef.current, trackId);
+      celloSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'flute' && fluteSamplerRef.current) {
+      routeSourceToTrack(fluteSamplerRef.current, trackId);
+      fluteSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
+      return;
+    }
+
+    if (presetId === 'violin' && violinSamplerRef.current) {
+      routeSourceToTrack(violinSamplerRef.current, trackId);
+      violinSamplerRef.current.triggerAttackRelease(noteName, duration, undefined, velocity);
       return;
     }
 
@@ -1143,6 +1264,9 @@ export function MainEditor() {
     samplerRef.current?.releaseAll();
     elecGuitarSamplerRef.current?.releaseAll();
     elecBassSamplerRef.current?.releaseAll();
+    celloSamplerRef.current?.releaseAll();
+    fluteSamplerRef.current?.releaseAll();
+    violinSamplerRef.current?.releaseAll();
     elecPianoSynthRef.current?.releaseAll();
     analogSynthRef.current?.releaseAll();
     organSynthRef.current?.releaseAll();
