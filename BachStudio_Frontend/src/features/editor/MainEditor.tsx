@@ -701,7 +701,11 @@ export function MainEditor() {
           'D#6': 'Ds6.mp3',
           'F#4': 'Fs4.mp3',
           'F#5': 'Fs5.mp3',
-          'F#6': 'Fs6.mp3'
+          'F#6': 'Fs6.mp3',
+          'G3': 'G3.mp3',
+          'G4': 'G4.mp3',
+          'G5': 'G5.mp3',
+          'G6': 'G6.mp3'
         },
         release: 1.2,
         baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/violin/',
