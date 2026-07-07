@@ -2254,8 +2254,20 @@ export function MainEditor() {
           await ensureAnalogSynth();
         } else if (track.instrumentPresetId === 'organ') {
           await ensureOrganSynth();
-        } else {
+        } else if (track.instrumentPresetId === 'bass') {
           await ensureBassSynth();
+        } else if (track.instrumentPresetId === 'elec_guitar') {
+          await ensureElecGuitarSampler();
+        } else if (track.instrumentPresetId === 'elec_bass') {
+          await ensureElecBassSampler();
+        } else if (track.instrumentPresetId === 'elec_piano') {
+          await ensureElecPianoSynth();
+        } else if (track.instrumentPresetId === 'cello') {
+          await ensureCelloSampler();
+        } else if (track.instrumentPresetId === 'flute') {
+          await ensureFluteSampler();
+        } else if (track.instrumentPresetId === 'violin') {
+          await ensureViolinSampler();
         }
 
         triggerInstrumentNote(track.id, track.instrumentPresetId, pitch, durationSeconds, velocity);
